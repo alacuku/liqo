@@ -429,7 +429,8 @@ func (liqoIPAM *IPAM) GetSubnetsPerCluster(
 	externalCIDR,
 	clusterID string) (mappedPodCIDR, mappedExternalCIDR string, err error) {
 	var exists bool
-
+	liqoIPAM.mutex.Lock()
+	defer liqoIPAM.mutex.Unlock()
 	// Get subnets of clusters
 	clusterSubnets := liqoIPAM.ipamStorage.getClusterSubnets()
 
@@ -1363,4 +1364,8 @@ func (liqoIPAM *IPAM) reservedSubnetOverlaps(subnet string) error {
 	}
 
 	return nil
+}
+
+func (liqoIPAM *IPAM) getClusters() map[string]netv1alpha1.Subnets {
+	return liqoIPAM.getClusters()
 }

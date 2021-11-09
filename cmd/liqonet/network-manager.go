@@ -15,16 +15,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/dynamic"
+	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
+	"github.com/liqotech/liqo/internal/liqonet/network-manager/httpserver"
 	"github.com/liqotech/liqo/internal/liqonet/network-manager/netcfgcreator"
 	"github.com/liqotech/liqo/internal/liqonet/network-manager/tunnelendpointcreator"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
@@ -41,9 +44,12 @@ type networkManagerFlags struct {
 
 	additionalPools args.CIDRList
 	reservedPools   args.CIDRList
+
+	clusterID string
 }
 
 func addNetworkManagerFlags(managerFlags *networkManagerFlags) {
+	flag.StringVar(&managerFlags.clusterID, "manager.cluster-id", "", "The cluster ID identifying the current cluster")
 	flag.Var(&managerFlags.podCIDR, "manager.pod-cidr", "The subnet used by the cluster for the pods, in CIDR notation")
 	flag.Var(&managerFlags.serviceCIDR, "manager.service-cidr", "The subnet used by the cluster for the pods, in services notation")
 	flag.Var(&managerFlags.reservedPools, "manager.reserved-pools",
@@ -111,6 +117,24 @@ func runNetworkManager(commonFlags *liqonetCommonFlags, managerFlags *networkMan
 		klog.Errorf("unable to create controller NetworkConfigCreator: %s", err)
 		os.Exit(1)
 	}
+
+	HTTPServer := &httpserver.HTTPServer{
+		GetDynamicConfig: ncc.WireguardConfig,
+		WaitConfig:       ncc.WaitForConfigured,
+		CreateTEP:        tec.CreateTunnelEndpoint,
+		ClientSet:        k8s.NewForConfigOrDie(mgr.GetConfig()),
+		NetConfig: httpserver.NetworkConfiguration{
+			ClusterID:       managerFlags.clusterID,
+			PodCIDR:         managerFlags.podCIDR.String(),
+			ServiceCIDR:     managerFlags.serviceCIDR.String(),
+			ExternalCIDR:    externalCIDR,
+			ReservedSubnets: managerFlags.reservedPools.StringList.StringList,
+			Pools:           append(liqonetIpam.Pools, managerFlags.additionalPools.StringList.StringList...),
+		},
+		Ipam: ipam,
+	}
+
+	HTTPServer.Start(context.TODO())
 
 	klog.Info("starting manager as liqo-network-manager")
 	if err := mgr.Start(tec.SetupSignalHandlerForTunEndCreator()); err != nil {

@@ -62,7 +62,7 @@ type NetworkConfigCreator struct {
 // Reconcile reconciles the state of ForeignCluster resources to enforce the respective NetworkConfigs.
 func (ncc *NetworkConfigCreator) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Wait, in case the configuration has not completed yet.
-	if !ncc.secretWatcher.WaitForConfigured(ctx) || !ncc.serviceWatcher.WaitForConfigured(ctx) {
+	if !ncc.WaitForConfigured(ctx) {
 		return ctrl.Result{}, errors.New("context expired before initialization completed")
 	}
 
@@ -122,4 +122,15 @@ func (ncc *NetworkConfigCreator) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&source.Kind{Type: &corev1.Secret{}}, ncc.secretWatcher.Handlers(), builder.WithPredicates(ncc.secretWatcher.Predicates())).
 		Watches(&source.Kind{Type: &corev1.Service{}}, ncc.serviceWatcher.Handlers(), builder.WithPredicates(ncc.serviceWatcher.Predicates())).
 		Complete(ncc)
+}
+
+func (ncc *NetworkConfigCreator) WaitForConfigured(ctx context.Context) bool {
+	return ncc.secretWatcher.WaitForConfigured(ctx) || ncc.serviceWatcher.WaitForConfigured(ctx)
+}
+
+func (ncc *NetworkConfigCreator) WireguardConfig() (ip, port, pubKey string) {
+	ip, port = ncc.serviceWatcher.WiregardEndpoint()
+	pubKey = ncc.secretWatcher.WiregardPublicKey()
+
+	return
 }
