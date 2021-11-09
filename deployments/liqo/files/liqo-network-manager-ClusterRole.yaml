@@ -12,6 +12,12 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+- apiGroups:
   - discovery.liqo.io
   resources:
   - foreignclusters

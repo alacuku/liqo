@@ -121,7 +121,7 @@ func runNetworkManager(commonFlags *liqonetCommonFlags, managerFlags *networkMan
 	HTTPServer := &httpserver.HTTPServer{
 		GetDynamicConfig: ncc.WireguardConfig,
 		WaitConfig:       ncc.WaitForConfigured,
-		CreateTEP:        tec.CreateTunnelEndpoint,
+		Tec:              tec,
 		ClientSet:        k8s.NewForConfigOrDie(mgr.GetConfig()),
 		NetConfig: httpserver.NetworkConfiguration{
 			ClusterID:       managerFlags.clusterID,

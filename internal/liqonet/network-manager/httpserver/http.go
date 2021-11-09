@@ -42,10 +42,9 @@ const (
 
 type HTTPServer struct {
 	GetDynamicConfig func() (ip, port, pubKey string)
-	WaitConfig       func(ctx context.Context) bool
-	CreateTEP        func(ctx context.Context, param *tunnelendpointcreator.NetworkParam,
-		ownerRef *metav1.OwnerReference, namespace string) error
-	ClientSet k8s.Interface
+	WaitConfig func(ctx context.Context) bool
+	Tec        *tunnelendpointcreator.TunnelEndpointCreator
+	ClientSet  k8s.Interface
 	NetConfig NetworkConfiguration
 	Ipam      *ipam.IPAM
 }
@@ -85,6 +84,15 @@ type ClusterMappingReq struct {
 	ExternalCIDRNAT string `json:"externalCIDRNAT"`
 }
 
+type MapRequest struct {
+	ClusterID string `json:"clusterID"`
+	Ip        string `json:"ip"`
+}
+
+type MapResponse struct {
+	Ip string `json:"ip"`
+}
+
 type ClusterMappingList struct {
 	Items []ClusterMappingReq `json:"items"`
 }
@@ -102,7 +110,8 @@ func (s *HTTPServer) Start(ctx context.Context) {
 		router := mux.NewRouter().StrictSlash(true)
 		router.HandleFunc("/config", s.networkConfiguration).Methods(http.MethodGet)
 		router.HandleFunc("/clusters", s.mapCluster).Methods(http.MethodPost)
-		router.HandleFunc("/tep", s.createTEP).Methods(http.MethodPost)
+		router.HandleFunc("/tep", s.enforceTEP).Methods(http.MethodPost)
+		router.HandleFunc("/ip", s.mapIP).Methods(http.MethodPost)
 
 		if err := http.ListenAndServe(":8080", router); err != nil {
 			klog.Fatalf("unable to start http server: %v", err)
@@ -155,6 +164,50 @@ func (s *HTTPServer) mapCluster(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
+func (s *HTTPServer) mapIP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+
+	req := new(MapRequest)
+	if err := dec.Decode(req); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+
+	resp, err := s.Ipam.MapEndpointIP(context.TODO(), &ipam.MapRequest{
+		ClusterID: req.ClusterID,
+		Ip:        req.Ip,
+	})
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	mapResp := new(MapResponse)
+	mapResp.Ip = resp.Ip
+	if err := json.NewEncoder(w).Encode(mapResp); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+	}
+
+	return
+}
+
+
 /*func (s *HTTPServer) getClusters(w http.ResponseWriter, r *http.Request) {
 
 
@@ -182,7 +235,7 @@ func (s *HTTPServer) mapCluster(w http.ResponseWriter, r *http.Request) {
 	return
 }*/
 
-func (s *HTTPServer) createTEP(w http.ResponseWriter, r *http.Request) {
+func (s *HTTPServer) enforceTEP(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -220,27 +273,48 @@ func (s *HTTPServer) createTEP(w http.ResponseWriter, r *http.Request) {
 		BackendConfig:         req.BackendConfig,
 	}
 
+	if err := s.Tec.IPManager.AddLocalSubnetsPerCluster(param.LocalNatPodCIDR, param.LocalNatExternalCIDR, param.RemoteClusterID);err != nil{
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+	nsName := "liqo-tenant-" + req.ClusterID
 	tenantNs := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   "liqo-tenant-" + req.ClusterID,
+			Name:   nsName,
 			Labels: map[string]string{discovery.ClusterIDLabel: req.ClusterID, discovery.TenantNamespaceLabel: "true"},
 		},
 	}
 
 	// First create namespace for the tenant.
-	ns, err := s.ClientSet.CoreV1().Namespaces().Create(context.TODO(), tenantNs, metav1.CreateOptions{})
+	tenantNs, err = s.ClientSet.CoreV1().Namespaces().Create(context.TODO(), tenantNs, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		w.WriteHeader(http.StatusInternalServerError)
 		klog.Error(err)
 		return
 	}
 
-	if err := s.CreateTEP(context.TODO(), param, nil, ns.Name); err != nil {
+	// Try to get the tunnelEndpoint, which may not exist
+	_, found, err := s.Tec.GetTunnelEndpoint(context.TODO(), param.RemoteClusterID, nsName)
+	if err != nil {
+		klog.Errorf("an error occurred while getting resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
 		w.WriteHeader(http.StatusInternalServerError)
-		klog.Error(err)
+		return
+	}
+
+	if !found {
+		if err := s.Tec.CreateTunnelEndpoint(context.TODO(), param, nil, nsName); err != nil{
+			klog.Errorf("an error occurred while creating resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := s.Tec.UpdateSpecTunnelEndpoint(context.TODO(), param, nsName); err != nil{
+		klog.Errorf("an error occurred while enforcing resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	return
-
 }
