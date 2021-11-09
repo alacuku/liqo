@@ -47,20 +47,20 @@ const (
 	tunEndpointNamePrefix = "tun-endpoint-"
 )
 
-type networkParam struct {
-	remoteClusterID       string
-	remoteEndpointIP      string
-	remotePodCIDR         string
-	remoteNatPodCIDR      string
-	remoteExternalCIDR    string
-	remoteNatExternalCIDR string
-	localEndpointIP       string
-	localNatPodCIDR       string
-	localPodCIDR          string
-	localExternalCIDR     string
-	localNatExternalCIDR  string
-	backendType           string
-	backendConfig         map[string]string
+type NetworkParam struct {
+	RemoteClusterID       string
+	RemoteEndpointIP      string
+	RemotePodCIDR         string
+	RemoteNatPodCIDR      string
+	RemoteExternalCIDR    string
+	RemoteNatExternalCIDR string
+	LocalEndpointIP       string
+	LocalNatPodCIDR       string
+	LocalPodCIDR          string
+	LocalExternalCIDR     string
+	LocalNatExternalCIDR  string
+	BackendType           string
+	BackendConfig         map[string]string
 }
 
 // TunnelEndpointCreator manages the most of liqo networking.
@@ -311,53 +311,53 @@ func (tec *TunnelEndpointCreator) enforceTunnelEndpoint(ctx context.Context, loc
 	tracer := trace.FromContext(ctx)
 
 	// At this point we have all the necessary parameters to create the tunnelEndpoint resource
-	param := &networkParam{
-		remoteClusterID:       local.Spec.ClusterID,
-		remoteEndpointIP:      remote.Spec.EndpointIP,
-		remotePodCIDR:         remote.Spec.PodCIDR,
-		remoteNatPodCIDR:      remote.Status.PodCIDRNAT,
-		remoteExternalCIDR:    remote.Spec.ExternalCIDR,
-		remoteNatExternalCIDR: remote.Status.ExternalCIDRNAT,
-		localNatPodCIDR:       local.Status.PodCIDRNAT,
-		localEndpointIP:       local.Spec.EndpointIP,
-		localPodCIDR:          local.Spec.PodCIDR,
-		localExternalCIDR:     local.Spec.ExternalCIDR,
-		localNatExternalCIDR:  local.Status.ExternalCIDRNAT,
-		backendType:           remote.Spec.BackendType,
-		backendConfig:         remote.Spec.BackendConfig,
+	param := &NetworkParam{
+		RemoteClusterID:       local.Spec.ClusterID,
+		RemoteEndpointIP:      remote.Spec.EndpointIP,
+		RemotePodCIDR:         remote.Spec.PodCIDR,
+		RemoteNatPodCIDR:      remote.Status.PodCIDRNAT,
+		RemoteExternalCIDR:    remote.Spec.ExternalCIDR,
+		RemoteNatExternalCIDR: remote.Status.ExternalCIDRNAT,
+		LocalNatPodCIDR:       local.Status.PodCIDRNAT,
+		LocalEndpointIP:       local.Spec.EndpointIP,
+		LocalPodCIDR:          local.Spec.PodCIDR,
+		LocalExternalCIDR:     local.Spec.ExternalCIDR,
+		LocalNatExternalCIDR:  local.Status.ExternalCIDRNAT,
+		BackendType:           remote.Spec.BackendType,
+		BackendConfig:         remote.Spec.BackendConfig,
 	}
 
 	// Try to get the tunnelEndpoint, which may not exist
-	_, found, err := tec.GetTunnelEndpoint(ctx, param.remoteClusterID, local.GetNamespace())
+	_, found, err := tec.GetTunnelEndpoint(ctx, param.RemoteClusterID, local.GetNamespace())
 	tracer.Step("TunnelEndpoint retrieval")
 	if err != nil {
-		klog.Errorf("an error occurred while getting resource tunnelEndpoint for cluster %s: %s", param.remoteClusterID, err)
+		klog.Errorf("an error occurred while getting resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
 		return err
 	}
 
 	if !found {
 		controllerRef := metav1.GetControllerOf(local)
 		defer tracer.Step("TunnelEndpoint creation")
-		return tec.createTunnelEndpoint(ctx, param, controllerRef, local.GetNamespace())
+		return tec.CreateTunnelEndpoint(ctx, param, controllerRef, local.GetNamespace())
 	}
 
 	defer tracer.Step("TunnelEndpoint update")
 	return tec.updateSpecTunnelEndpoint(ctx, param, local.GetNamespace())
 }
 
-func (tec *TunnelEndpointCreator) updateSpecTunnelEndpoint(ctx context.Context, param *networkParam, namespace string) error {
+func (tec *TunnelEndpointCreator) updateSpecTunnelEndpoint(ctx context.Context, param *NetworkParam, namespace string) error {
 	var tep *netv1alpha1.TunnelEndpoint
 	var found bool
 	var err error
 	// here we recover from conflicting resource versions
 	retryError := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		tep, found, err = tec.GetTunnelEndpoint(ctx, param.remoteClusterID, namespace)
+		tep, found, err = tec.GetTunnelEndpoint(ctx, param.RemoteClusterID, namespace)
 		if err != nil {
 			return err
 		}
 		if !found {
 			return apierrors.NewNotFound(netv1alpha1.TunnelEndpointGroupResource,
-				strings.Join([]string{"tunnelEndpoint for cluster:", param.remoteClusterID}, " "))
+				strings.Join([]string{"tunnelEndpoint for cluster:", param.RemoteClusterID}, " "))
 		}
 
 		original := tep.Spec.DeepCopy()
@@ -377,7 +377,7 @@ func (tec *TunnelEndpointCreator) updateSpecTunnelEndpoint(ctx context.Context, 
 	return nil
 }
 
-func (tec *TunnelEndpointCreator) createTunnelEndpoint(ctx context.Context, param *networkParam,
+func (tec *TunnelEndpointCreator) CreateTunnelEndpoint(ctx context.Context, param *NetworkParam,
 	ownerRef *metav1.OwnerReference, namespace string) error {
 	// here we create it
 	tep := &netv1alpha1.TunnelEndpoint{
@@ -385,7 +385,7 @@ func (tec *TunnelEndpointCreator) createTunnelEndpoint(ctx context.Context, para
 			GenerateName: tunEndpointNamePrefix,
 			Namespace:    namespace,
 			Labels: map[string]string{
-				liqoconst.ClusterIDLabelName: param.remoteClusterID,
+				liqoconst.ClusterIDLabelName: param.RemoteClusterID,
 			},
 		},
 	}
@@ -405,19 +405,19 @@ func (tec *TunnelEndpointCreator) createTunnelEndpoint(ctx context.Context, para
 	return nil
 }
 
-func (tec *TunnelEndpointCreator) fillTunnelEndpointSpec(tep *netv1alpha1.TunnelEndpoint, param *networkParam) {
-	tep.Spec.ClusterID = param.remoteClusterID
-	tep.Spec.LocalPodCIDR = param.localPodCIDR
-	tep.Spec.LocalExternalCIDR = param.localExternalCIDR
-	tep.Spec.LocalNATPodCIDR = param.localNatPodCIDR
-	tep.Spec.LocalNATExternalCIDR = param.localNatExternalCIDR
-	tep.Spec.RemotePodCIDR = param.remotePodCIDR
-	tep.Spec.RemoteNATPodCIDR = param.remoteNatPodCIDR
-	tep.Spec.RemoteExternalCIDR = param.remoteExternalCIDR
-	tep.Spec.RemoteNATExternalCIDR = param.remoteNatExternalCIDR
-	tep.Spec.EndpointIP = param.remoteEndpointIP
-	tep.Spec.BackendType = param.backendType
-	tep.Spec.BackendConfig = param.backendConfig
+func (tec *TunnelEndpointCreator) fillTunnelEndpointSpec(tep *netv1alpha1.TunnelEndpoint, param *NetworkParam) {
+	tep.Spec.ClusterID = param.RemoteClusterID
+	tep.Spec.LocalPodCIDR = param.LocalPodCIDR
+	tep.Spec.LocalExternalCIDR = param.LocalExternalCIDR
+	tep.Spec.LocalNATPodCIDR = param.LocalNatPodCIDR
+	tep.Spec.LocalNATExternalCIDR = param.LocalNatExternalCIDR
+	tep.Spec.RemotePodCIDR = param.RemotePodCIDR
+	tep.Spec.RemoteNATPodCIDR = param.RemoteNatPodCIDR
+	tep.Spec.RemoteExternalCIDR = param.RemoteExternalCIDR
+	tep.Spec.RemoteNATExternalCIDR = param.RemoteNatExternalCIDR
+	tep.Spec.EndpointIP = param.RemoteEndpointIP
+	tep.Spec.BackendType = param.BackendType
+	tep.Spec.BackendConfig = param.BackendConfig
 }
 
 // GetTunnelEndpoint retrieves the tunnelEndpoint resource related to a cluster.
