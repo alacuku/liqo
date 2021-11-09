@@ -1365,7 +1365,3 @@ func (liqoIPAM *IPAM) reservedSubnetOverlaps(subnet string) error {
 
 	return nil
 }
-
-func (liqoIPAM *IPAM) getClusters() map[string]netv1alpha1.Subnets {
-	return liqoIPAM.getClusters()
-}

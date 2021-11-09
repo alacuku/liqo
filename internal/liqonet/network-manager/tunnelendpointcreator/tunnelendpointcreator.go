@@ -80,6 +80,7 @@ type TunnelEndpointCreator struct {
 // +kubebuilder:rbac:groups=discovery.liqo.io,resources=foreignclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=discovery.liqo.io,resources=foreignclusters/status;foreignclusters/finalizers,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=create
 
 // Reconcile reconciles the state of NetworkConfig resources.
 func (tec *TunnelEndpointCreator) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -342,10 +343,10 @@ func (tec *TunnelEndpointCreator) enforceTunnelEndpoint(ctx context.Context, loc
 	}
 
 	defer tracer.Step("TunnelEndpoint update")
-	return tec.updateSpecTunnelEndpoint(ctx, param, local.GetNamespace())
+	return tec.UpdateSpecTunnelEndpoint(ctx, param, local.GetNamespace())
 }
 
-func (tec *TunnelEndpointCreator) updateSpecTunnelEndpoint(ctx context.Context, param *NetworkParam, namespace string) error {
+func (tec *TunnelEndpointCreator) UpdateSpecTunnelEndpoint(ctx context.Context, param *NetworkParam, namespace string) error {
 	var tep *netv1alpha1.TunnelEndpoint
 	var found bool
 	var err error
