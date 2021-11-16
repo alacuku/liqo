@@ -70,7 +70,7 @@ func (certManager *identityManager) GetSigningRequest(remoteClusterID string) ([
 }
 
 // StoreCertificate stores the certificate issued by a remote authority for the specified remoteClusterID.
-func (certManager *identityManager) StoreCertificate(remoteClusterID string, identityResponse *auth.CertificateIdentityResponse) error {
+func (certManager *identityManager) StoreCertificate(remoteClusterID, remoteProxyURL string, identityResponse *auth.CertificateIdentityResponse) error {
 	secret, err := certManager.getSecret(remoteClusterID)
 	if err != nil {
 		klog.Error(err)
@@ -110,6 +110,9 @@ func (certManager *identityManager) StoreCertificate(remoteClusterID string, ide
 	}
 
 	secret.Data[apiServerURLSecretKey] = []byte(identityResponse.APIServerURL)
+	if remoteProxyURL != ""{
+		secret.Data[apiProxyURLSecretKey] = []byte(remoteProxyURL)
+	}
 	secret.Data[namespaceSecretKey] = []byte(identityResponse.Namespace)
 
 	if _, err = certManager.client.CoreV1().Secrets(secret.Namespace).Update(context.TODO(), secret, metav1.UpdateOptions{}); err != nil {

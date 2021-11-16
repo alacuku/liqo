@@ -19,17 +19,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	liqoconst "github.com/liqotech/liqo/pkg/consts"
 	"io"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"net/http"
 	"net/url"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/httpstream"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/transport/spdy"
 
 	"github.com/liqotech/liqo/internal/liqonet/network-manager/httpserver"
+	liqoconst "github.com/liqotech/liqo/pkg/consts"
 )
 
 var (
@@ -49,9 +50,10 @@ var (
 	}
 	remotePort = 8080
 
-	deploymentsToBePatched = []string{
-		"liqo-crd-replicator",
-		"liqo-controller-manager",
+	svcLabels = metav1.LabelSelector{
+		MatchLabels: map[string]string{
+			"app.kubernetes.io/instance": "liqo-auth",
+			"app.kubernetes.io/name":     "auth"},
 	}
 )
 
@@ -64,6 +66,9 @@ type cluster struct {
 	remotePort int
 	localPort  int
 	proxyIP    string
+	proxyPort  int32
+	authIP     string
+	authPort   int32
 }
 
 // NewCluster returns a new cluster object. The cluster has to be initialized before being consumed.
@@ -288,7 +293,7 @@ func (c *cluster) MapIP(remoteClusterID, IPAddress string) (*httpserver.MapRespo
 	}
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	client := &http.Client{}
-	fmt.Printf("%s -> request to cluster %s to map ip address %s\n", c.netConfig.ClusterID, remoteClusterID, IPAddress)
+	fmt.Printf("%s -> request to map ip address %s living in cluster %s \n", c.netConfig.ClusterID, IPAddress, remoteClusterID)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -305,16 +310,43 @@ func (c *cluster) MapIP(remoteClusterID, IPAddress string) (*httpserver.MapRespo
 	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(mapResp); err != nil {
 		return nil, err
 	}
-	fmt.Printf("%s -> ip address %s successfully mapped by cluster %s to %s\n", c.netConfig.ClusterID, IPAddress, remoteClusterID, mapResp.Ip)
+	fmt.Printf("%s -> ip address %s living in cluster %s successfully mapped by local cluster to %s\n", c.netConfig.ClusterID, IPAddress, remoteClusterID, mapResp.Ip)
 	return mapResp, nil
 }
 
 func (c *cluster) setUpProxy(ctx context.Context) error {
+
+	proxyService := &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "liqo-proxy",
+			Namespace: c.namespace,
+			Labels: map[string]string{
+				"run": "api-proxy",
+			},
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{{
+				Name:        "http",
+				Protocol:    "TCP",
+				AppProtocol: nil,
+				Port:        8118,
+				TargetPort: intstr.IntOrString{
+					Type:   intstr.Int,
+					IntVal: 8118,
+					StrVal: "8118",
+				},
+			}},
+			Selector: map[string]string{
+				"run": "api-proxy",
+			},
+		},
+	}
+
 	liqoProxyPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "liqo-proxy",
 			Namespace: c.namespace,
-			Labels: map[string]string{"run": "api-proxy"},
+			Labels:    map[string]string{"run": "api-proxy"},
 		},
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
@@ -325,32 +357,48 @@ func (c *cluster) setUpProxy(ctx context.Context) error {
 			},
 		},
 	}
-	pod, err := c.client.CoreV1().Pods(c.namespace).Create(ctx, liqoProxyPod, metav1.CreateOptions{})
+	_, err := c.client.CoreV1().Pods(c.namespace).Create(ctx, liqoProxyPod, metav1.CreateOptions{})
+	if err != nil && !k8serrors.IsAlreadyExists(err) {
+		return err
+	}
+
+	svc, err := c.client.CoreV1().Services(c.namespace).Create(ctx, proxyService, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return err
 	}
 	if k8serrors.IsAlreadyExists(err) {
-		pod, err = c.client.CoreV1().Pods(c.namespace).Get(ctx, liqoProxyPod.Name, metav1.GetOptions{})
+		svc, err = c.client.CoreV1().Services(c.namespace).Get(ctx, liqoProxyPod.Name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
 	}
-	c.proxyIP = pod.Status.PodIP
+
+	c.proxyIP = svc.Spec.ClusterIP
+	c.proxyPort = svc.Spec.Ports[0].Port
+
 	return nil
 }
 
-/*func (c *cluster) patchEnv(proxyIP string) error {
-	envToBeAdded := []v1.EnvVar{
-		{
-			Name:  "HTTPS_PROXY",
-			Value: "http//" + proxyIP + ":8118",
-		},
-		{
-			Name: "NO_PROXY",
-			Value: c.netConfig.PodCIDR + "," + c.netConfig.ServiceCIDR,
-		},
+func (c *cluster) getAuthIP(ctx context.Context) error {
+	svcs, err := c.client.CoreV1().Services(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: metav1.FormatLabelSelector(&svcLabels),
+	})
+
+	if err != nil {
+		return fmt.Errorf("unable to list svcs: %w", err)
 	}
-	strategicpatch.CreateTwoWayMergePatch()
-	appsv1.Deployment{}
-	c.client.AppsV1().Deployments(c.namespace).Patch()
-}*/
+
+	labels := metav1.FormatLabelSelector(&podLabels)
+
+	if len(svcs.Items) == 0 {
+		return fmt.Errorf("no running svcs found for selector: %s", labels)
+	}
+
+	if len(svcs.Items) != 1 {
+		return fmt.Errorf("multiple svcs found for selector: %s", labels)
+	}
+	c.authIP = svcs.Items[0].Spec.ClusterIP
+	c.authPort = svcs.Items[0].Spec.Ports[0].Port
+
+	return nil
+}

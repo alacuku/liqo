@@ -74,26 +74,51 @@ func (a *Args) Handler(ctx context.Context) error {
 		return err
 	}
 
-	if err := cluster1.setUpProxy(ctx); err != nil{
+	if err := cluster1.setUpProxy(ctx); err != nil {
 		return err
 	}
 
-	if err := cluster2.setUpProxy(ctx); err != nil{
+	if err := cluster2.setUpProxy(ctx); err != nil {
 		return err
 	}
 
 	// Map ip proxy of cluster1 into cluster2.
 	proxyIPcluster2AsSeenByCluster1, err := cluster1.MapIP(cluster2.netConfig.ClusterID, cluster1.proxyIP)
-	if err != nil{
+	if err != nil {
 		return err
 	}
 
 	proxyIPcluster1AsSeenByCluster2, err := cluster2.MapIP(cluster1.netConfig.ClusterID, cluster2.proxyIP)
-	if err != nil{
+	if err != nil {
 		return err
 	}
-	fmt.Printf(proxyIPcluster2AsSeenByCluster1.Ip, proxyIPcluster1AsSeenByCluster2.Ip)
+	proxyURLCluster1 := fmt.Sprintf("http://%s:%d", proxyIPcluster2AsSeenByCluster1.Ip, cluster1.proxyPort)
+	fmt.Println(proxyURLCluster1)
+	proxyURLCluster2 := fmt.Sprintf("http://%s:%d", proxyIPcluster1AsSeenByCluster2.Ip, cluster2.proxyPort)
+	fmt.Println(proxyURLCluster2)
 
+	if err := cluster1.getAuthIP(ctx); err != nil {
+		return err
+	}
 
+	if err := cluster2.getAuthIP(ctx); err != nil {
+		return err
+	}
+
+	// Map ip proxy of cluster1 into cluster2.
+	authIPcluster2AsSeenByCluster1, err := cluster1.MapIP(cluster2.netConfig.ClusterID, cluster1.authIP)
+	if err != nil {
+		return err
+	}
+
+	authIPcluster1AsSeenByCluster2, err := cluster2.MapIP(cluster1.netConfig.ClusterID, cluster2.authIP)
+	if err != nil {
+		return err
+	}
+
+	authURLCluster1 := fmt.Sprintf("https://%s:%d/ids", authIPcluster2AsSeenByCluster1.Ip, cluster1.authPort)
+	fmt.Println(authURLCluster1)
+	authURLCluster2 := fmt.Sprintf("https://%s:%d/ids", authIPcluster1AsSeenByCluster2.Ip, cluster2.authPort)
+	fmt.Println(authURLCluster2)
 	return nil
 }

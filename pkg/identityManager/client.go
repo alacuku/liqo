@@ -20,6 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+	"net/http"
+	"net/url"
 )
 
 // GetConfig gets a rest config from the secret, given the remote clusterID and (optionally) the namespace.
@@ -79,6 +81,31 @@ func (certManager *identityManager) GetConfig(remoteClusterID, namespace string)
 		}, remoteClusterID)
 		return nil, err
 	}
+
+	proxyURL, ok := secret.Data[apiProxyURLSecretKey]
+	var proxy *url.URL
+	if  ok {
+		proxy, err = url.Parse(string(proxyURL))
+		if err != nil{
+			klog.Errorf("an error occurred while parsing proxy url %s from secret %v/%v: %s", proxyURL, secret.Namespace, secret.Name, err)
+			return nil, err
+		}
+
+		// create the rest config with proxy that can be used to create a client
+		return &rest.Config{
+			Host:    string(host),
+			APIPath: "/apis",
+			TLSClientConfig: rest.TLSClientConfig{
+				CertData: certData,
+				KeyData:  keyData,
+				CAData:   caData,
+			},
+			Proxy: func(request *http.Request) (*url.URL, error) {
+				return  proxy, nil
+			},
+		}, nil
+	}
+
 
 	// create the rest config that can be used to create a client
 	return &rest.Config{
