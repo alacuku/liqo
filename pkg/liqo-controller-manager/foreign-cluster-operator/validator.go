@@ -17,6 +17,7 @@ package foreignclusteroperator
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -98,6 +99,17 @@ func (r *ForeignClusterReconciler) isClusterProcessable(ctx context.Context,
 	if err != nil {
 		klog.Error(err)
 		return false, err
+	}
+
+	_, err = url.Parse(foreignCluster.Spec.ForeignProxyURL)
+	if err != nil{
+		peeringconditionsutils.EnsureStatus(foreignCluster,
+			discoveryv1alpha1.ProcessForeignClusterStatusCondition,
+			discoveryv1alpha1.PeeringConditionStatusError,
+			"InvalidProxyURL",
+			fmt.Sprintf("Invalid Proxy URL %s: (%v)", foreignCluster.Spec.ForeignProxyURL, err),
+		)
+		return false, nil
 	}
 
 	if foreignClusterWithSameID.GetUID() == foreignCluster.GetUID() {

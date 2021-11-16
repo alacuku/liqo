@@ -34,7 +34,7 @@ type IdentityManager interface {
 
 	CreateIdentity(remoteClusterID string) (*v1.Secret, error)
 	GetSigningRequest(remoteClusterID string) ([]byte, error)
-	StoreCertificate(remoteClusterID string, identityResponse *auth.CertificateIdentityResponse) error
+	StoreCertificate(remoteClusterID, remoteProxyURL string, identityResponse *auth.CertificateIdentityResponse) error
 }
 
 // IdentityProvider provides the interface to retrieve and approve remote cluster identities.

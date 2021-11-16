@@ -42,11 +42,11 @@ const (
 
 type HTTPServer struct {
 	GetDynamicConfig func() (ip, port, pubKey string)
-	WaitConfig func(ctx context.Context) bool
-	Tec        *tunnelendpointcreator.TunnelEndpointCreator
-	ClientSet  k8s.Interface
-	NetConfig NetworkConfiguration
-	Ipam      *ipam.IPAM
+	WaitConfig       func(ctx context.Context) bool
+	Tec              *tunnelendpointcreator.TunnelEndpointCreator
+	ClientSet        k8s.Interface
+	NetConfig        NetworkConfiguration
+	Ipam             *ipam.IPAM
 }
 
 type NetworkConfiguration struct {
@@ -207,7 +207,6 @@ func (s *HTTPServer) mapIP(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-
 /*func (s *HTTPServer) getClusters(w http.ResponseWriter, r *http.Request) {
 
 
@@ -273,7 +272,7 @@ func (s *HTTPServer) enforceTEP(w http.ResponseWriter, r *http.Request) {
 		BackendConfig:         req.BackendConfig,
 	}
 
-	if err := s.Tec.IPManager.AddLocalSubnetsPerCluster(param.LocalNatPodCIDR, param.LocalNatExternalCIDR, param.RemoteClusterID);err != nil{
+	if err := s.Tec.IPManager.AddLocalSubnetsPerCluster(param.LocalNatPodCIDR, param.LocalNatExternalCIDR, param.RemoteClusterID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		klog.Error(err)
 		return
@@ -303,14 +302,14 @@ func (s *HTTPServer) enforceTEP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
-		if err := s.Tec.CreateTunnelEndpoint(context.TODO(), param, nil, nsName); err != nil{
+		if err := s.Tec.CreateTunnelEndpoint(context.TODO(), param, nil, nsName); err != nil {
 			klog.Errorf("an error occurred while creating resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 	}
 
-	if err := s.Tec.UpdateSpecTunnelEndpoint(context.TODO(), param, nsName); err != nil{
+	if err := s.Tec.UpdateSpecTunnelEndpoint(context.TODO(), param, nsName); err != nil {
 		klog.Errorf("an error occurred while enforcing resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
