@@ -102,7 +102,7 @@ func (r *ForeignClusterReconciler) isClusterProcessable(ctx context.Context,
 	}
 
 	_, err = url.Parse(foreignCluster.Spec.ForeignProxyURL)
-	if err != nil{
+	if err != nil {
 		peeringconditionsutils.EnsureStatus(foreignCluster,
 			discoveryv1alpha1.ProcessForeignClusterStatusCondition,
 			discoveryv1alpha1.PeeringConditionStatusError,

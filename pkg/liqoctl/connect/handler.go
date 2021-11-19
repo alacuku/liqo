@@ -82,13 +82,13 @@ func (a *Args) Handler(ctx context.Context) error {
 		return err
 	}
 
-	// Map ip proxy of cluster1 into cluster2.
-	proxyIPcluster2AsSeenByCluster1, err := cluster1.MapIP(cluster2.netConfig.ClusterID, cluster1.proxyIP)
+	// Map ip proxy of cluster2 into cluster1.
+	proxyIPcluster2AsSeenByCluster1, err := cluster1.MapIP(cluster2.netConfig.ClusterID, cluster2.proxyIP)
 	if err != nil {
 		return err
 	}
 
-	proxyIPcluster1AsSeenByCluster2, err := cluster2.MapIP(cluster1.netConfig.ClusterID, cluster2.proxyIP)
+	proxyIPcluster1AsSeenByCluster2, err := cluster2.MapIP(cluster1.netConfig.ClusterID, cluster1.proxyIP)
 	if err != nil {
 		return err
 	}
