@@ -15,13 +15,14 @@
 package identitymanager
 
 import (
+	"net/http"
+	"net/url"
+
 	v1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-	"net/http"
-	"net/url"
 )
 
 // GetConfig gets a rest config from the secret, given the remote clusterID and (optionally) the namespace.
@@ -84,9 +85,9 @@ func (certManager *identityManager) GetConfig(remoteClusterID, namespace string)
 
 	proxyURL, ok := secret.Data[apiProxyURLSecretKey]
 	var proxy *url.URL
-	if  ok {
+	if ok {
 		proxy, err = url.Parse(string(proxyURL))
-		if err != nil{
+		if err != nil {
 			klog.Errorf("an error occurred while parsing proxy url %s from secret %v/%v: %s", proxyURL, secret.Namespace, secret.Name, err)
 			return nil, err
 		}
@@ -101,11 +102,10 @@ func (certManager *identityManager) GetConfig(remoteClusterID, namespace string)
 				CAData:   caData,
 			},
 			Proxy: func(request *http.Request) (*url.URL, error) {
-				return  proxy, nil
+				return proxy, nil
 			},
 		}, nil
 	}
-
 
 	// create the rest config that can be used to create a client
 	return &rest.Config{

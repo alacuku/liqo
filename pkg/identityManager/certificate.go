@@ -110,7 +110,7 @@ func (certManager *identityManager) StoreCertificate(remoteClusterID, remoteProx
 	}
 
 	secret.Data[apiServerURLSecretKey] = []byte(identityResponse.APIServerURL)
-	if remoteProxyURL != ""{
+	if remoteProxyURL != "" {
 		secret.Data[apiProxyURLSecretKey] = []byte(remoteProxyURL)
 	}
 	secret.Data[namespaceSecretKey] = []byte(identityResponse.Namespace)
