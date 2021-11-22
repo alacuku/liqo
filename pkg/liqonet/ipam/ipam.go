@@ -663,7 +663,7 @@ func (liqoIPAM *IPAM) initNatMappingsPerCluster(clusterID string, subnets netv1a
 	var externalCIDR string
 	if subnets.LocalNATExternalCIDR == consts.DefaultCIDRValue {
 		// Remote cluster has not remapped home ExternalCIDR
-		externalCIDR = liqoIPAM.ipamStorage.getExternalCIDR()
+		externalCIDR = subnets.RemoteExternalCIDR
 	} else {
 		externalCIDR = subnets.LocalNATExternalCIDR
 	}
@@ -1052,7 +1052,11 @@ func (liqoIPAM *IPAM) mapEndpointIPInternal(clusterID, ip string) (string, error
 	// IP does not belong to cluster PodCIDR: Pod is a reflected Pod
 
 	// Map IP to ExternalCIDR
-	newIP, err := liqoIPAM.mapIPToExternalCIDR(clusterID, subnets.LocalNATExternalCIDR, ip)
+	var externalCIDR string
+	if subnets.LocalNATExternalCIDR == consts.DefaultCIDRValue{
+		externalCIDR = subnets.RemoteExternalCIDR
+	}
+	newIP, err := liqoIPAM.mapIPToExternalCIDR(clusterID, externalCIDR, ip)
 	if err != nil {
 		return "", fmt.Errorf("cannot map endpoint IP %s to ExternalCIDR of cluster %s: %w", ip, clusterID, err)
 	}

@@ -19,9 +19,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	discoveryv1alpha1 "github.com/liqotech/liqo/apis/discovery/v1alpha1"
+	"github.com/liqotech/liqo/pkg/auth"
+	"github.com/liqotech/liqo/pkg/discovery"
+	"github.com/liqotech/liqo/pkg/utils/authenticationtoken"
+	foreigncluster "github.com/liqotech/liqo/pkg/utils/foreignCluster"
 	"io"
+	"k8s.io/utils/pointer"
 	"net/http"
 	"net/url"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -69,6 +77,7 @@ type cluster struct {
 	proxyPort  int32
 	authIP     string
 	authPort   int32
+	token string
 }
 
 // NewCluster returns a new cluster object. The cluster has to be initialized before being consumed.
@@ -402,3 +411,58 @@ func (c *cluster) getAuthIP(ctx context.Context) error {
 
 	return nil
 }
+
+func (c *cluster) getToken(ctx context.Context) error {
+	clientSet, err := client.New(c.restConfig, client.Options{})
+	if err != nil{
+		return err
+	}
+	c.token, err = auth.GetToken(ctx, clientSet, c.namespace)
+	if err != nil{
+		fmt.Printf("%s -> unable to get token: %s", err)
+		return err
+	}
+	return nil
+}
+
+func (c *cluster) addCluster (ctx context.Context, name, id, token, authURL, proxyURL string) error{
+
+	if c.netConfig.ClusterID == id{
+		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
+	}
+
+	clientSet, err := client.New(c.restConfig, client.Options{})
+	if err != nil{
+		return err
+	}
+
+	if err := authenticationtoken.StoreInSecret(ctx, c.client, id, token, c.namespace); err != nil{
+		return fmt.Errorf("%s -> unable to add cluster %s: %w", c.netConfig.ClusterID, id, err)
+	}
+
+	// Create ForeignCluster
+	fc, err := foreigncluster.GetForeignClusterByID(ctx, clientSet, id)
+	if k8serrors.IsNotFound(err) {
+		fc = &discoveryv1alpha1.ForeignCluster{ObjectMeta: metav1.ObjectMeta{Name: name,
+			Labels: map[string]string{discovery.ClusterIDLabel: id}}}
+	} else if err != nil {
+		return err
+	}
+
+	_, err = controllerutil.CreateOrUpdate(ctx, clientSet, fc, func() error {
+		fc.Spec.ForeignAuthURL = authURL
+		fc.Spec.ForeignProxyURL = proxyURL
+		fc.Spec.OutgoingPeeringEnabled = discoveryv1alpha1.PeeringEnabledYes
+		if fc.Spec.IncomingPeeringEnabled == "" {
+			fc.Spec.IncomingPeeringEnabled = discoveryv1alpha1.PeeringEnabledAuto
+		}
+		if fc.Spec.InsecureSkipTLSVerify == nil {
+			fc.Spec.InsecureSkipTLSVerify = pointer.BoolPtr(true)
+		}
+		return nil
+	})
+	return err
+}
+
+
+
