@@ -90,6 +90,11 @@ func (ncc *NetworkConfigCreator) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
+	if fc.Spec.ForeignProxyURL != "" {
+		klog.V(4).Infof("ForeignCluster %q associated with a proxy, no need to create the networkconfigs", req.Name)
+		return ctrl.Result{}, nil
+	}
+
 	// Add the ForeignCluster to the list of known ones.
 	ncc.foreignClusters.Add(req.NamespacedName.Name)
 

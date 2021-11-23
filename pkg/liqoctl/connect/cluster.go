@@ -196,6 +196,7 @@ func (c *cluster) getConfig() error {
 	}
 
 	body, err := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
 	if err != nil {
 		return err
 	}
@@ -222,6 +223,7 @@ func (c *cluster) mapCluster(config httpserver.NetworkConfiguration) (*httpserve
 	if err != nil {
 		return nil, err
 	}
+	req.Close = true
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -363,7 +365,7 @@ func (c *cluster) setUpProxy(ctx context.Context) error {
 			Containers: []v1.Container{
 				{
 					Name:  "privoxy",
-					Image: "aldokcl/dronet:privoxy",
+					Image: "aldokcl/dronet:privoxy7",
 				},
 			},
 		},

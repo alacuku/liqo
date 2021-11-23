@@ -106,12 +106,12 @@ func (a *Args) Handler(ctx context.Context) error {
 	}
 
 	// Map ip proxy of cluster1 into cluster2.
-	authIPcluster2AsSeenByCluster1, err := cluster1.MapIP(cluster2.netConfig.ClusterID, cluster2.authIP)
+	authIPcluster2AsSeenByCluster1, err := cluster2.MapIP(cluster1.netConfig.ClusterID, cluster2.authIP)
 	if err != nil {
 		return err
 	}
 
-	authIPcluster1AsSeenByCluster2, err := cluster2.MapIP(cluster1.netConfig.ClusterID, cluster1.authIP)
+	authIPcluster1AsSeenByCluster2, err := cluster1.MapIP(cluster2.netConfig.ClusterID, cluster1.authIP)
 	if err != nil {
 		return err
 	}
@@ -129,6 +129,10 @@ func (a *Args) Handler(ctx context.Context) error {
 		return err
 	}
 	if err := cluster1.addCluster(ctx, cluster2.netConfig.ClusterID, cluster2.netConfig.ClusterID, cluster2.token, authURLCluster1, proxyURLCluster1); err != nil {
+		return err
+	}
+
+	if err := cluster2.addCluster(ctx, cluster1.netConfig.ClusterID, cluster1.netConfig.ClusterID, cluster1.token, authURLCluster2, proxyURLCluster2); err != nil {
 		return err
 	}
 	return nil
