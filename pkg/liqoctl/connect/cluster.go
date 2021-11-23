@@ -19,17 +19,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	discoveryv1alpha1 "github.com/liqotech/liqo/apis/discovery/v1alpha1"
-	"github.com/liqotech/liqo/pkg/auth"
-	"github.com/liqotech/liqo/pkg/discovery"
-	"github.com/liqotech/liqo/pkg/utils/authenticationtoken"
-	foreigncluster "github.com/liqotech/liqo/pkg/utils/foreignCluster"
 	"io"
-	"k8s.io/utils/pointer"
 	"net/http"
 	"net/url"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -43,9 +35,17 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
+	"k8s.io/utils/pointer"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	discoveryv1alpha1 "github.com/liqotech/liqo/apis/discovery/v1alpha1"
 	"github.com/liqotech/liqo/internal/liqonet/network-manager/httpserver"
+	"github.com/liqotech/liqo/pkg/auth"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
+	"github.com/liqotech/liqo/pkg/discovery"
+	"github.com/liqotech/liqo/pkg/utils/authenticationtoken"
+	foreigncluster "github.com/liqotech/liqo/pkg/utils/foreignCluster"
 )
 
 var (
@@ -77,7 +77,7 @@ type cluster struct {
 	proxyPort  int32
 	authIP     string
 	authPort   int32
-	token string
+	token      string
 }
 
 // NewCluster returns a new cluster object. The cluster has to be initialized before being consumed.
@@ -416,29 +416,29 @@ func (c *cluster) getAuthIP(ctx context.Context) error {
 
 func (c *cluster) getToken(ctx context.Context) error {
 	clientSet, err := client.New(c.restConfig, client.Options{})
-	if err != nil{
+	if err != nil {
 		return err
 	}
 	c.token, err = auth.GetToken(ctx, clientSet, c.namespace)
-	if err != nil{
+	if err != nil {
 		fmt.Printf("%s -> unable to get token: %s", err)
 		return err
 	}
 	return nil
 }
 
-func (c *cluster) addCluster (ctx context.Context, name, id, token, authURL, proxyURL string) error{
+func (c *cluster) addCluster(ctx context.Context, name, id, token, authURL, proxyURL string) error {
 
-	if c.netConfig.ClusterID == id{
+	if c.netConfig.ClusterID == id {
 		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
 	}
 
 	clientSet, err := client.New(c.restConfig, client.Options{})
-	if err != nil{
+	if err != nil {
 		return err
 	}
 
-	if err := authenticationtoken.StoreInSecret(ctx, c.client, id, token, c.namespace); err != nil{
+	if err := authenticationtoken.StoreInSecret(ctx, c.client, id, token, c.namespace); err != nil {
 		return fmt.Errorf("%s -> unable to add cluster %s: %w", c.netConfig.ClusterID, id, err)
 	}
 
@@ -465,6 +465,3 @@ func (c *cluster) addCluster (ctx context.Context, name, id, token, authURL, pro
 	})
 	return err
 }
-
-
-

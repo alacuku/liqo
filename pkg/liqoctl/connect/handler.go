@@ -121,14 +121,14 @@ func (a *Args) Handler(ctx context.Context) error {
 	authURLCluster2 := fmt.Sprintf("https://%s:%d", authIPcluster1AsSeenByCluster2.Ip, cluster2.authPort)
 	fmt.Println(authURLCluster2)
 
-	if err := cluster1.getToken(ctx); err != nil{
+	if err := cluster1.getToken(ctx); err != nil {
 		return err
 	}
 
-	if err := cluster2.getToken(ctx); err != nil{
+	if err := cluster2.getToken(ctx); err != nil {
 		return err
 	}
-	if err := cluster1.addCluster(ctx, cluster2.netConfig.ClusterID, cluster2.netConfig.ClusterID, cluster2.token, authURLCluster1, proxyURLCluster1); err != nil{
+	if err := cluster1.addCluster(ctx, cluster2.netConfig.ClusterID, cluster2.netConfig.ClusterID, cluster2.token, authURLCluster1, proxyURLCluster1); err != nil {
 		return err
 	}
 	return nil
