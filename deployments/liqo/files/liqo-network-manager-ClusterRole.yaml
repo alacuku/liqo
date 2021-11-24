@@ -17,6 +17,7 @@ rules:
   - namespaces
   verbs:
   - create
+  - delete
 - apiGroups:
   - discovery.liqo.io
   resources:

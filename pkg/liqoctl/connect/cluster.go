@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -63,13 +64,15 @@ var (
 			"app.kubernetes.io/instance": "liqo-auth",
 			"app.kubernetes.io/name":     "auth"},
 	}
+
+	unpeeringTimeToWait = 60 * time.Second
 )
 
 type cluster struct {
 	client     k8s.Interface
 	restConfig *rest.Config
 	namespace  string
-	netConfig  httpserver.NetworkConfiguration
+	NetConfig  httpserver.NetworkConfiguration
 	stopChan   chan struct{}
 	remotePort int
 	localPort  int
@@ -147,7 +150,7 @@ func (c *cluster) Init() error {
 		break
 	}
 
-	fmt.Println(fmt.Sprintf("port forwarding local port %d -> to remote pods port %d", c.localPort, c.remotePort))
+	fmt.Println(fmt.Sprintf("%s -> port forwarding local port %d -> to remote pods port %d", c.NetConfig.ClusterID, c.localPort, c.remotePort))
 
 	return c.getConfig()
 }
@@ -200,7 +203,7 @@ func (c *cluster) getConfig() error {
 	if err != nil {
 		return err
 	}
-	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(&c.netConfig); err != nil {
+	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(&c.NetConfig); err != nil {
 		return err
 	}
 
@@ -306,7 +309,7 @@ func (c *cluster) MapIP(remoteClusterID, IPAddress string) (*httpserver.MapRespo
 	}
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	client := &http.Client{}
-	fmt.Printf("%s -> request to map ip address %s living in cluster %s \n", c.netConfig.ClusterID, IPAddress, remoteClusterID)
+	fmt.Printf("%s -> request to map ip address %s living in cluster %s \n", c.NetConfig.ClusterID, IPAddress, remoteClusterID)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -323,7 +326,7 @@ func (c *cluster) MapIP(remoteClusterID, IPAddress string) (*httpserver.MapRespo
 	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(mapResp); err != nil {
 		return nil, err
 	}
-	fmt.Printf("%s -> ip address %s living in cluster %s successfully mapped by local cluster to %s\n", c.netConfig.ClusterID, IPAddress, remoteClusterID, mapResp.Ip)
+	fmt.Printf("%s -> ip address %s living in cluster %s successfully mapped by local cluster to %s\n", c.NetConfig.ClusterID, IPAddress, remoteClusterID, mapResp.Ip)
 	return mapResp, nil
 }
 
@@ -431,7 +434,7 @@ func (c *cluster) getToken(ctx context.Context) error {
 
 func (c *cluster) addCluster(ctx context.Context, name, id, token, authURL, proxyURL string) error {
 
-	if c.netConfig.ClusterID == id {
+	if c.NetConfig.ClusterID == id {
 		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
 	}
 
@@ -441,7 +444,7 @@ func (c *cluster) addCluster(ctx context.Context, name, id, token, authURL, prox
 	}
 
 	if err := authenticationtoken.StoreInSecret(ctx, c.client, id, token, c.namespace); err != nil {
-		return fmt.Errorf("%s -> unable to add cluster %s: %w", c.netConfig.ClusterID, id, err)
+		return fmt.Errorf("%s -> unable to add cluster %s: %w", c.NetConfig.ClusterID, id, err)
 	}
 
 	// Create ForeignCluster
@@ -466,4 +469,111 @@ func (c *cluster) addCluster(ctx context.Context, name, id, token, authURL, prox
 		return nil
 	})
 	return err
+}
+
+func (c *cluster) RemoveCluster(ctx context.Context, id string) error {
+	if c.NetConfig.ClusterID == id {
+		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
+	}
+
+	clientSet, err := client.New(c.restConfig, client.Options{})
+	if err != nil {
+		return err
+	}
+
+	// Create ForeignCluster
+	fc, err := foreigncluster.GetForeignClusterByID(ctx, clientSet, id)
+	if k8serrors.IsNotFound(err) {
+		fmt.Printf("%s -> foreigncluster for remote cluster with id {%s} not found, it seems that has already been removed \n", c.NetConfig.ClusterID, id)
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("%s -> unable to remove cluster {%s}: %w", c.NetConfig.ClusterID, id, err)
+	}
+	// First check if any type of peering is active.
+	// If not, then remove the foreigncluster and return
+	if !foreigncluster.IsIncomingJoined(fc) && !foreigncluster.IsOutgoingJoined(fc) {
+		return clientSet.Delete(ctx, fc)
+	}
+	mutateFn := func() error {
+		fc.Spec.OutgoingPeeringEnabled = "No"
+		return nil
+	}
+
+	if _, err := controllerutil.CreateOrPatch(ctx, clientSet, fc, mutateFn); err != nil {
+		return err
+	}
+	// Wait for the foreigncluster to be ready for deletion.
+	var deadLine <-chan time.Time
+	fmt.Printf("%s -> waiting to unpeer from cluster {%s}...(%.0fs)\n", c.NetConfig.ClusterID, id, unpeeringTimeToWait.Seconds())
+	// start time.
+	deadLine = time.After(unpeeringTimeToWait)
+	for {
+		select {
+		case <-deadLine:
+			return fmt.Errorf("waiting to unpeer from cluster {%s} expired", id)
+		default:
+			fc, err := foreigncluster.GetForeignClusterByID(ctx, clientSet, id)
+			if err != nil {
+				return err
+			}
+			if !foreigncluster.IsIncomingJoined(fc) && !foreigncluster.IsOutgoingJoined(fc) {
+				return clientSet.Delete(ctx, fc)
+			}
+			time.Sleep(2 * time.Second)
+			continue
+		}
+	}
+}
+
+func (c *cluster) RemoveTEP(ctx context.Context, id string) error {
+	if c.NetConfig.ClusterID == id {
+		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/removetep", c.localPort)
+
+	tepSpec := &httpserver.TunnelEndpointSpec{
+		ClusterID: id,
+	}
+
+	jsonData, err := json.Marshal(tepSpec)
+	if err != nil {
+		return err
+	}
+	// First we map the cluster.
+	req, err := http.NewRequest(http.MethodDelete, url, bytes.NewBuffer(jsonData))
+	req.Close = true
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	fmt.Println(resp.StatusCode)
+
+	nsName := "liqo-tenant-" + id
+	// Wait for tenant namespace to be deleted.
+	var deadLine <-chan time.Time
+	fmt.Printf("%s -> waiting to delete namespace {%s} for cluster {%s}... (%.0fs)\n", c.NetConfig.ClusterID, nsName, id, unpeeringTimeToWait.Seconds())
+	// start time.
+	deadLine = time.After(unpeeringTimeToWait)
+	for {
+		select {
+		case <-deadLine:
+			return fmt.Errorf("waiting time for the cluster to unpeer from cluster {%s} expired", id)
+		default:
+			_, err := c.client.CoreV1().Namespaces().Get(ctx, nsName, metav1.GetOptions{})
+			if err != nil && !k8serrors.IsNotFound(err) {
+				return err
+			} else if k8serrors.IsNotFound(err) {
+				return nil
+			}
+
+			time.Sleep(2 * time.Second)
+			continue
+		}
+	}
 }

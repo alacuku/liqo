@@ -112,6 +112,7 @@ func (s *HTTPServer) Start(ctx context.Context) {
 		router.HandleFunc("/clusters", s.mapCluster).Methods(http.MethodPost)
 		router.HandleFunc("/tep", s.enforceTEP).Methods(http.MethodPost)
 		router.HandleFunc("/ip", s.mapIP).Methods(http.MethodPost)
+		router.HandleFunc("/removetep", s.removeTEP).Methods(http.MethodDelete)
 
 		if err := http.ListenAndServe(":8080", router); err != nil {
 			klog.Fatalf("unable to start http server: %v", err)
@@ -307,11 +308,53 @@ func (s *HTTPServer) enforceTEP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		return
 	}
 
 	if err := s.Tec.UpdateSpecTunnelEndpoint(context.TODO(), param, nsName); err != nil {
 		klog.Errorf("an error occurred while enforcing resource tunnelEndpoint for cluster %s: %s", param.RemoteClusterID, err)
 		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	return
+}
+
+func (s *HTTPServer) removeTEP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+
+	dec := json.NewDecoder(strings.NewReader(string(body)))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+
+	req := new(TunnelEndpointSpec)
+	if err := dec.Decode(req); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+
+	// first remove mapping.
+	if err := s.Tec.IPManager.RemoveClusterConfig(req.ClusterID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
+		return
+	}
+	nsName := "liqo-tenant-" + req.ClusterID
+
+	// Delete namespace for the tenant.
+	err = s.ClientSet.CoreV1().Namespaces().Delete(context.TODO(), nsName, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		w.WriteHeader(http.StatusInternalServerError)
+		klog.Error(err)
 		return
 	}
 
