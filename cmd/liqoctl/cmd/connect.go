@@ -35,7 +35,7 @@ func newConnectCommand(ctx context.Context) *cobra.Command {
 	
 						$liqoctl connect --config1 "pathTokubeconfigCluster1" --namespace1 "namespaceWhereLiqoIsRunning" --config2 "pathTokubeconfigCluster2" --namespace2 "namespaceWhereLiqoIsRunning"
 		`,
-		SilenceErrors: false,
+		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return params.Handler(ctx)

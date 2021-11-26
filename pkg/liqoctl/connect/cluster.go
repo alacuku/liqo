@@ -19,18 +19,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/liqotech/liqo/pkg/liqoctl/common"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/alacuku/pterm"
 	v1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	k8s "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -41,6 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	discoveryv1alpha1 "github.com/liqotech/liqo/apis/discovery/v1alpha1"
+	sharingv1alpha1 "github.com/liqotech/liqo/apis/sharing/v1alpha1"
 	"github.com/liqotech/liqo/internal/liqonet/network-manager/httpserver"
 	"github.com/liqotech/liqo/pkg/auth"
 	liqoconst "github.com/liqotech/liqo/pkg/consts"
@@ -65,41 +72,136 @@ var (
 			"app.kubernetes.io/name":     "auth"},
 	}
 
-	unpeeringTimeToWait = 60 * time.Second
+	unpeeringTimeToWait = 120 * time.Second
+
+	spinnerCharset = []string{"⠈⠁", "⠈⠑", "⠈⠱", "⠈⡱", "⢀⡱", "⢄⡱", "⢄⡱", "⢆⡱", "⢎⡱", "⢎⡰", "⢎⡠", "⢎⡀", "⢎⠁", "⠎⠁", "⠊⠁"}
+
+	scheme = new(runtime.Scheme)
 )
 
 type cluster struct {
-	client     k8s.Interface
-	restConfig *rest.Config
-	namespace  string
-	NetConfig  httpserver.NetworkConfiguration
-	stopChan   chan struct{}
-	remotePort int
-	localPort  int
-	proxyIP    string
-	proxyPort  int32
-	authIP     string
-	authPort   int32
-	token      string
+	// name it can be "cluster1" or "cluster2" based on the arguments passed to initialize this cluster.
+	name             string
+	k8sClientSet     k8s.Interface
+	conRuntimeClient client.Client
+	restConfig       *rest.Config
+	namespace        string
+	id               string
+	NetConfig        httpserver.NetworkConfiguration
+	stopChan         chan struct{}
+	remotePort       int
+	localPort        int
+	proxyIP          string
+	proxyPort        int32
+	authIP           string
+	authPort         int32
+	authToken        string
+	Printer          *printer
+}
+
+type serviceEndpoint struct {
+	ipAddress string
+	port      int32
+}
+
+type printer struct {
+	Info    *pterm.PrefixPrinter
+	Success *pterm.PrefixPrinter
+	Warning *pterm.PrefixPrinter
+	Error   *pterm.PrefixPrinter
+	Spinner *pterm.SpinnerPrinter
+}
+
+func init() {
+	scheme = runtime.NewScheme()
+	utilruntime.Must(sharingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(discoveryv1alpha1.AddToScheme(scheme))
 }
 
 // NewCluster returns a new cluster object. The cluster has to be initialized before being consumed.
-func NewCluster(kubeconfig, namespace string) (*cluster, error) {
+func NewCluster(kubeconfig, namespace, name string, printerColor pterm.Color) (*cluster, error) {
+	genericPrinter := pterm.PrefixPrinter{
+		Prefix: pterm.Prefix{},
+		Scope: pterm.Scope{
+			Text:  name,
+			Style: pterm.NewStyle(printerColor),
+		},
+		MessageStyle: pterm.NewStyle(pterm.FgDefault),
+		Writer: os.Stdout,
+	}
+
+	successPrinter := common.SuccessPrinter.WithScope(
+		pterm.Scope{
+			Text:  name,
+			Style: pterm.NewStyle(printerColor),
+		}).WithCustomWriter(os.Stdout)
+
+	warningPrinter := common.WarningPrinter.WithScope(
+		pterm.Scope{
+			Text:  name,
+			Style: pterm.NewStyle(printerColor),
+		}).WithCustomWriter(os.Stdout)
+
+	errorPrinter := common.ErrorPrinter.WithScope(
+		pterm.Scope{
+			Text:  name,
+			Style: pterm.NewStyle(printerColor),
+		}).WithCustomWriter(os.Stdout)
+
+	printer := &printer{
+		Info: genericPrinter.WithPrefix(pterm.Prefix{
+			Text:  "[INFO]",
+			Style: pterm.NewStyle(pterm.FgCyan),
+		}),
+		Success: successPrinter,
+		Warning: warningPrinter,
+		Error:   errorPrinter,
+		Spinner: &pterm.SpinnerPrinter{
+			Sequence:            spinnerCharset,
+			Style:               pterm.NewStyle(printerColor),
+			Delay:               time.Millisecond * 100,
+			MessageStyle:        pterm.NewStyle(printerColor),
+			SuccessPrinter:      successPrinter,
+			FailPrinter:         errorPrinter,
+			WarningPrinter:      warningPrinter,
+			RemoveWhenDone:      false,
+			ShowTimer:           true,
+			TimerRoundingFactor: time.Second,
+			TimerStyle:          &pterm.ThemeDefault.TimerStyle,
+			Separator:           '\t',
+			Writer:              os.Stdout,
+		},
+	}
+
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
+		printer.Error.Printf("an error occurred while creating rest config from kubeconfig: %s", err)
 		return nil, err
 	}
 
-	client, err := k8s.NewForConfig(config)
+	k8sClientSet, err := k8s.NewForConfig(config)
 	if err != nil {
+		printer.Error.Printf("an error occurred while creating k8s clientSet: %s", err)
 		return nil, err
 	}
 
+	crClient, err := client.New(config, client.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		printer.Error.Printf("an error occurred while creating controller runtime client: %s", err)
+		return nil, err
+	}
+
+	printer.Success.Println("setup correctly done")
 	return &cluster{
-		client:     client,
-		namespace:  namespace,
-		remotePort: remotePort,
-		restConfig: config,
+		name:             name,
+		k8sClientSet:     k8sClientSet,
+		conRuntimeClient: crClient,
+		namespace:        namespace,
+		remotePort:       remotePort,
+		restConfig:       config,
+		Printer:          printer,
 	}, nil
 }
 
@@ -116,14 +218,17 @@ func (c *cluster) Init() error {
 	}
 
 	c.localPort = localPort
-
+	s, _ := c.Printer.Spinner.Start(fmt.Sprintf("(%s) port forwarding local port %d to remote port %d of pod ", c.name, localPort, c.remotePort))
+	time.Sleep(2 * time.Second)
 	podURL, err := c.getPodURL(ctx)
 	if err != nil {
+		s.Fail()
 		return err
 	}
 
 	dialer, err := c.newDialer(podURL)
 	if err != nil {
+		s.Fail(fmt.Sprintf("port forwarding local port %d to remote port %d of pod ", localPort, c.remotePort))
 		return fmt.Errorf("unable to create dialer: %w", err)
 	}
 
@@ -134,6 +239,7 @@ func (c *cluster) Init() error {
 	discard := io.Discard
 	pf, err := portforward.New(dialer, ports, c.stopChan, readyChan, discard, discard)
 	if err != nil {
+		s.Fail(fmt.Sprintf("port forwarding local port %d to remote port %d of pod ", localPort, c.remotePort))
 		return fmt.Errorf("unable to port forward into pod %s: %w", podURL.String(), err)
 	}
 
@@ -144,13 +250,14 @@ func (c *cluster) Init() error {
 	select {
 	case err = <-errChan:
 		if err != nil {
+			s.Fail()
 			return fmt.Errorf("an error occurred while port forwarding: %w", err)
 		}
 	case <-readyChan:
 		break
 	}
 
-	fmt.Println(fmt.Sprintf("%s -> port forwarding local port %d -> to remote pods port %d", c.NetConfig.ClusterID, c.localPort, c.remotePort))
+	s.Success(fmt.Sprintf("port forwarding local port %d to remote port %d of pod ", localPort, c.remotePort))
 
 	return c.getConfig()
 }
@@ -161,7 +268,7 @@ func (c *cluster) Stop() {
 }
 
 func (c *cluster) getPodURL(ctx context.Context) (*url.URL, error) {
-	pods, err := c.client.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+	pods, err := c.k8sClientSet.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(&podLabels),
 		FieldSelector: fields.OneTermEqualSelector("status.phase", string(v1.PodRunning)).String(),
 	})
@@ -180,7 +287,7 @@ func (c *cluster) getPodURL(ctx context.Context) (*url.URL, error) {
 		return nil, fmt.Errorf("multiple pods found for selector: %s", labels)
 	}
 
-	return c.client.CoreV1().RESTClient().Post().Resource("pods").Namespace(pods.Items[0].Namespace).Name(pods.Items[0].Name).SubResource("portforward").URL(), nil
+	return c.k8sClientSet.CoreV1().RESTClient().Post().Resource("pods").Namespace(pods.Items[0].Namespace).Name(pods.Items[0].Name).SubResource("portforward").URL(), nil
 }
 
 func (c *cluster) newDialer(podURL *url.URL) (httpstream.Dialer, error) {
@@ -373,17 +480,17 @@ func (c *cluster) setUpProxy(ctx context.Context) error {
 			},
 		},
 	}
-	_, err := c.client.CoreV1().Pods(c.namespace).Create(ctx, liqoProxyPod, metav1.CreateOptions{})
+	_, err := c.k8sClientSet.CoreV1().Pods(c.namespace).Create(ctx, liqoProxyPod, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return err
 	}
 
-	svc, err := c.client.CoreV1().Services(c.namespace).Create(ctx, proxyService, metav1.CreateOptions{})
+	svc, err := c.k8sClientSet.CoreV1().Services(c.namespace).Create(ctx, proxyService, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return err
 	}
 	if k8serrors.IsAlreadyExists(err) {
-		svc, err = c.client.CoreV1().Services(c.namespace).Get(ctx, liqoProxyPod.Name, metav1.GetOptions{})
+		svc, err = c.k8sClientSet.CoreV1().Services(c.namespace).Get(ctx, liqoProxyPod.Name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -396,7 +503,7 @@ func (c *cluster) setUpProxy(ctx context.Context) error {
 }
 
 func (c *cluster) getAuthIP(ctx context.Context) error {
-	svcs, err := c.client.CoreV1().Services(c.namespace).List(ctx, metav1.ListOptions{
+	svcs, err := c.k8sClientSet.CoreV1().Services(c.namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(&svcLabels),
 	})
 
@@ -424,7 +531,7 @@ func (c *cluster) getToken(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	c.token, err = auth.GetToken(ctx, clientSet, c.namespace)
+	c.authToken, err = auth.GetToken(ctx, clientSet, c.namespace)
 	if err != nil {
 		fmt.Printf("%s -> unable to get token: %s", err)
 		return err
@@ -443,7 +550,7 @@ func (c *cluster) addCluster(ctx context.Context, name, id, token, authURL, prox
 		return err
 	}
 
-	if err := authenticationtoken.StoreInSecret(ctx, c.client, id, token, c.namespace); err != nil {
+	if err := authenticationtoken.StoreInSecret(ctx, c.k8sClientSet, id, token, c.namespace); err != nil {
 		return fmt.Errorf("%s -> unable to add cluster %s: %w", c.NetConfig.ClusterID, id, err)
 	}
 
@@ -472,52 +579,71 @@ func (c *cluster) addCluster(ctx context.Context, name, id, token, authURL, prox
 }
 
 func (c *cluster) RemoveCluster(ctx context.Context, id string) error {
-	if c.NetConfig.ClusterID == id {
-		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
+	s, _ := c.Printer.Spinner.Start(fmt.Sprintf("(%s) disabling peering for cluster %s (%.0fs)", c.name, id, unpeeringTimeToWait.Seconds()))
+	localID := c.NetConfig.ClusterID
+	if localID == id {
+		s.Fail("the cluster ID of the cluster to be removed is equal to the local cluster")
+		return fmt.Errorf("the cluster ID of the cluster to be removed is equal to the local cluster")
 	}
 
-	clientSet, err := client.New(c.restConfig, client.Options{})
-	if err != nil {
+	// Get ForeignCluster.
+	fc, err := foreigncluster.GetForeignClusterByID(ctx, c.conRuntimeClient, id)
+	if k8serrors.IsNotFound(err) {
+		s.Warning(fmt.Sprintf("foreigncluster for remote cluster with id {%s} not found, it seems that has already been removed \n", id))
+		return nil
+	} else if err != nil {
+		s.Fail(fmt.Sprintf("an error occurred withe disabling peering for cluster %s: %s", id, err))
 		return err
 	}
 
-	// Create ForeignCluster
-	fc, err := foreigncluster.GetForeignClusterByID(ctx, clientSet, id)
-	if k8serrors.IsNotFound(err) {
-		fmt.Printf("%s -> foreigncluster for remote cluster with id {%s} not found, it seems that has already been removed \n", c.NetConfig.ClusterID, id)
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("%s -> unable to remove cluster {%s}: %w", c.NetConfig.ClusterID, id, err)
-	}
-	// First check if any type of peering is active.
-	// If not, then remove the foreigncluster and return
-	if !foreigncluster.IsIncomingJoined(fc) && !foreigncluster.IsOutgoingJoined(fc) {
-		return clientSet.Delete(ctx, fc)
-	}
+	localNamespace := fc.Status.TenantNamespace.Local
+	resOfferName := "resourceoffer-" + fc.Spec.ClusterIdentity.ClusterID
 	mutateFn := func() error {
 		fc.Spec.OutgoingPeeringEnabled = "No"
 		return nil
 	}
+	ro := &sharingv1alpha1.ResourceOffer{}
 
-	if _, err := controllerutil.CreateOrPatch(ctx, clientSet, fc, mutateFn); err != nil {
+	if _, err := controllerutil.CreateOrPatch(ctx, c.conRuntimeClient, fc, mutateFn); err != nil {
+		s.Fail(fmt.Sprintf("an error occurred withe disabling peering for cluster %s: %s", id, err))
 		return err
 	}
 	// Wait for the foreigncluster to be ready for deletion.
 	var deadLine <-chan time.Time
-	fmt.Printf("%s -> waiting to unpeer from cluster {%s}...(%.0fs)\n", c.NetConfig.ClusterID, id, unpeeringTimeToWait.Seconds())
 	// start time.
 	deadLine = time.After(unpeeringTimeToWait)
 	for {
 		select {
 		case <-deadLine:
-			return fmt.Errorf("waiting to unpeer from cluster {%s} expired", id)
+			s.Fail(fmt.Sprintf("waiting time to un-peer from cluster %s exceeded %.0f", id, unpeeringTimeToWait.Seconds()))
+			return fmt.Errorf("waiting time to un-peer from cluster %s exceeded %.0f", id, unpeeringTimeToWait)
 		default:
-			fc, err := foreigncluster.GetForeignClusterByID(ctx, clientSet, id)
-			if err != nil {
+			s.UpdateText(fmt.Sprintf("(%s) waiting for resourceoffer %s/%s to be removed", c.name, localNamespace, resOfferName))
+			// Get resourceoffer.
+			if err := c.conRuntimeClient.Get(ctx, types.NamespacedName{
+				Namespace: localNamespace,
+				Name:      resOfferName,
+			}, ro); err != nil && !k8serrors.IsNotFound(err) {
+				s.Fail(fmt.Sprintf("unable to get resourceoffer %s/%s: %s", localNamespace, resOfferName, err))
 				return err
+			}else if err == nil {
+				continue
+			}
+			s.UpdateText(fmt.Sprintf("(%s) waiting for foreign cluster of remote cluster %s to be ready for deletion", c.name, id))
+			fc, err := foreigncluster.GetForeignClusterByID(ctx, c.conRuntimeClient, id)
+			if err != nil && !k8serrors.IsNotFound(err) {
+				s.Fail(fmt.Sprintf("unable to get foreign cluster of remote cluster %s: %s", id, err))
+				return err
+			} else if k8serrors.IsNotFound(err) {
+				continue
 			}
 			if !foreigncluster.IsIncomingJoined(fc) && !foreigncluster.IsOutgoingJoined(fc) {
-				return clientSet.Delete(ctx, fc)
+				if err := c.conRuntimeClient.Delete(ctx, fc); err != nil && !k8serrors.IsNotFound(err) {
+					s.Fail(fmt.Sprintf("unable to delete foreign cluster of remote cluster %s: %s", id, err))
+					return err
+				}
+				s.Success(fmt.Sprintf("unpeering process from cluster %s completed", id))
+				return nil
 			}
 			time.Sleep(2 * time.Second)
 			continue
@@ -526,8 +652,79 @@ func (c *cluster) RemoveCluster(ctx context.Context, id string) error {
 }
 
 func (c *cluster) RemoveTEP(ctx context.Context, id string) error {
-	if c.NetConfig.ClusterID == id {
-		return fmt.Errorf("the cluster ID of the cluster to be added is equal to the local cluster")
+	s, _ := c.Printer.Spinner.Start(fmt.Sprintf("(%s) removing TEP for cluster %s (%.0fs)", c.name, id, unpeeringTimeToWait.Seconds()))
+	localID := c.NetConfig.ClusterID
+	if localID == id {
+		s.Fail("the cluster ID of the cluster to be removed is equal to the local cluster")
+		return fmt.Errorf("the cluster ID of the cluster to be removed is equal to the local cluster")
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/removetep", c.localPort)
+
+	tepSpec := &httpserver.TunnelEndpointSpec{
+		ClusterID: id,
+	}
+
+	jsonData, err := json.Marshal(tepSpec)
+	if err != nil {
+		return err
+	}
+	// First we unmap the cluster.
+	req, err := http.NewRequest(http.MethodDelete, url, bytes.NewBuffer(jsonData))
+	req.Close = true
+	if err != nil {
+		s.Fail("unable to do HTTP delete request: %s", err)
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	client := &http.Client{}
+	_, err = client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	nsName := "liqo-tenant-" + id
+	if err := c.k8sClientSet.CoreV1().Namespaces().Delete(ctx, nsName, metav1.DeleteOptions{}); err != nil && !k8serrors.IsNotFound(err) {
+		s.Fail(fmt.Sprintf("unable to delete tenant namespace %s for cluster %s: %s", nsName, id, err))
+		return err
+	} else if k8serrors.IsNotFound(err) {
+		s.Success(fmt.Sprintf("disconnecting process from cluster %s completed", id))
+		return nil
+	}
+	// Wait for tenant namespace to be deleted.
+	var deadLine <-chan time.Time
+	s.UpdateText(fmt.Sprintf("(%s) waiting to delete tenant namespace %s for cluster %s (%.0fs)", c.name, nsName, id, unpeeringTimeToWait.Seconds()))
+	// start time.
+	deadLine = time.After(unpeeringTimeToWait)
+	for {
+		select {
+		case <-deadLine:
+			s.Fail(fmt.Sprintf("waiting time to delete tenant namespace %s for cluster %s exceeded %.0f", nsName, id, unpeeringTimeToWait.Seconds()))
+			return fmt.Errorf("waiting time to delete tenant namespace %s for cluster %s exceeded %.0f",nsName, id, unpeeringTimeToWait.Seconds())
+
+		default:
+			_, err := c.k8sClientSet.CoreV1().Namespaces().Get(ctx, nsName, metav1.GetOptions{})
+			if err != nil && !k8serrors.IsNotFound(err) {
+				s.Fail(fmt.Sprintf("unable to get tenant namespace %s for cluster %s: %s", nsName, id, err))
+				return err
+			} else if k8serrors.IsNotFound(err) {
+				s.Success(fmt.Sprintf("disconnecting process from cluster %s completed", id))
+				return nil
+			}
+
+			time.Sleep(2 * time.Second)
+			continue
+		}
+	}
+
+}
+
+func (c *cluster) UnmapCluster(id string) error {
+	s, _ := c.Printer.Spinner.Start(fmt.Sprintf("(%s) unmapping networks for cluster %s (%.0fs)", c.name, id, unpeeringTimeToWait.Seconds()))
+	localID := c.NetConfig.ClusterID
+	if localID == id {
+		s.Fail("the cluster ID of the cluster to be removed is equal to the local cluster")
+		return fmt.Errorf("the cluster ID of the cluster to be removed is equal to the local cluster")
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/removetep", c.localPort)
@@ -548,32 +745,12 @@ func (c *cluster) RemoveTEP(ctx context.Context, id string) error {
 	}
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	client := &http.Client{}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
+
 	fmt.Println(resp.StatusCode)
-
-	nsName := "liqo-tenant-" + id
-	// Wait for tenant namespace to be deleted.
-	var deadLine <-chan time.Time
-	fmt.Printf("%s -> waiting to delete namespace {%s} for cluster {%s}... (%.0fs)\n", c.NetConfig.ClusterID, nsName, id, unpeeringTimeToWait.Seconds())
-	// start time.
-	deadLine = time.After(unpeeringTimeToWait)
-	for {
-		select {
-		case <-deadLine:
-			return fmt.Errorf("waiting time for the cluster to unpeer from cluster {%s} expired", id)
-		default:
-			_, err := c.client.CoreV1().Namespaces().Get(ctx, nsName, metav1.GetOptions{})
-			if err != nil && !k8serrors.IsNotFound(err) {
-				return err
-			} else if k8serrors.IsNotFound(err) {
-				return nil
-			}
-
-			time.Sleep(2 * time.Second)
-			continue
-		}
-	}
+	return nil
 }

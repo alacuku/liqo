@@ -16,11 +16,11 @@ package disconnect
 
 import (
 	"fmt"
-	"sync"
-
-	"golang.org/x/net/context"
-
+	"github.com/liqotech/liqo/pkg/liqoctl/common"
 	"github.com/liqotech/liqo/pkg/liqoctl/connect"
+	"golang.org/x/net/context"
+	"os"
+	"sync"
 )
 
 // Args flags of the connect command.
@@ -31,13 +31,15 @@ type Args struct {
 	Cluster2Kubeconfig string
 }
 
-// Handler implements the logic of the connect command.
+// Handler implements the logic of the disconnect command.
 func (a *Args) Handler(ctx context.Context) error {
 	// Check that the kubeconfigs are different.
 	if a.Cluster1Kubeconfig == a.Cluster2Kubeconfig {
+		common.ErrorPrinter.Printf("kubeconfig1 and kubeconfig2 has to be different, current value: %s", a.Cluster2Kubeconfig)
 		return fmt.Errorf("kubeconfig1 and kubeconfig2 has to be different, current value: %s", a.Cluster2Kubeconfig)
 	}
-	cluster1, err := connect.NewCluster(a.Cluster1Kubeconfig, a.Cluster1Namespace)
+
+	cluster1, err := connect.NewCluster(a.Cluster1Kubeconfig, a.Cluster1Namespace, connect.Cluster1Name, connect.Cluster1Color)
 	if err != nil {
 		return err
 	}
@@ -46,7 +48,7 @@ func (a *Args) Handler(ctx context.Context) error {
 	}
 	defer cluster1.Stop()
 
-	cluster2, err := connect.NewCluster(a.Cluster2Kubeconfig, a.Cluster2Namespace)
+	cluster2, err := connect.NewCluster(a.Cluster2Kubeconfig, a.Cluster2Namespace, connect.Cluster2Name, connect.Cluster2Color)
 	if err != nil {
 		return err
 	}
@@ -56,66 +58,67 @@ func (a *Args) Handler(ctx context.Context) error {
 	}
 	defer cluster2.Stop()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	cluster1ExitError := make(chan error, 1)
-	cluster2ExitError := make(chan error, 1)
-
 	// unpeer cluster 1
+	var cluster1Error, cluster2Error error
+	cluster1Chan := make(chan error, 1)
+	cluster2Chan := make(chan error, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	writer, stopCh := common.ConcurrentSpinner(fmt.Sprintf("(%s)", connect.Cluster1Name), fmt.Sprintf("(%s)", connect.Cluster2Name))
+
+	cluster1.Printer.Spinner.Writer = writer
+	cluster2.Printer.Spinner.Writer = writer
+
 	go func() {
 		defer wg.Done()
-		cluster1ExitError <- cluster1.RemoveCluster(ctx, cluster2.NetConfig.ClusterID)
+		cluster1Chan <-cluster1.RemoveCluster(ctx, cluster2.NetConfig.ClusterID)
 	}()
 
-	// unpeer cluster 2
 	go func() {
 		defer wg.Done()
-		cluster2ExitError <- cluster2.RemoveCluster(ctx, cluster1.NetConfig.ClusterID)
+		cluster2Chan <-cluster2.RemoveCluster(ctx, cluster1.NetConfig.ClusterID)
+	}()
+	wg.Wait()
+	cluster1Error = <- cluster1Chan
+	cluster2Error = <- cluster2Chan
+	if cluster1Error != nil{
+		return err
+	}
+	if cluster2Error != nil{
+		return err
+	}
+	stopCh <- true
+	fmt.Fprintf(writer, "")
+
+
+
+	wg.Add(2)
+	writer, stopCh = common.ConcurrentSpinner(fmt.Sprintf("(%s)", connect.Cluster1Name), fmt.Sprintf("(%s)", connect.Cluster2Name))
+
+	cluster1.Printer.Spinner.Writer = writer
+	cluster2.Printer.Spinner.Writer = writer
+	go func() {
+		defer wg.Done()
+		cluster1Chan <- cluster1.RemoveTEP(ctx, cluster2.NetConfig.ClusterID)
+	}()
+
+	go func() {
+		defer wg.Done()
+		cluster2Chan <- cluster2.RemoveTEP(ctx, cluster1.NetConfig.ClusterID)
 	}()
 
 	wg.Wait()
-	errorCluster1 := <-cluster1ExitError
-	errorCluster2 := <-cluster2ExitError
-	if errorCluster1 != nil {
-		fmt.Printf("%s -> unable to remove cluster with id {%s}: %s\n", cluster1.NetConfig.ClusterID, cluster2.NetConfig.ClusterID, err)
+	cluster1Error = <- cluster1Chan
+	cluster2Error = <- cluster2Chan
+	if cluster1Error != nil{
+		return err
+	}
+	if cluster2Error != nil{
+		return err
 	}
 
-	if errorCluster2 != nil {
-		fmt.Printf("%s -> unable to remove cluster with  id {%s}: %s\n", cluster2.NetConfig.ClusterID, cluster1.NetConfig.ClusterID, err)
-	}
-
-	if errorCluster1 != nil || errorCluster2 != nil {
-		return fmt.Errorf("unable to disconnect clusters")
-	}
-
-	wg.Add(2)
-
-	// unpeer cluster 1
-	go func() {
-		defer wg.Done()
-		cluster1ExitError <- cluster1.RemoveTEP(ctx, cluster2.NetConfig.ClusterID)
-	}()
-
-	// unpeer cluster 2
-	go func() {
-		defer wg.Done()
-		cluster2ExitError <- cluster2.RemoveTEP(ctx, cluster1.NetConfig.ClusterID)
-	}()
-
-	wg.Wait()
-	errorCluster1 = <-cluster1ExitError
-	errorCluster2 = <-cluster2ExitError
-	if errorCluster1 != nil {
-		fmt.Printf("%s -> unable to remove TEP for cluster with id {%s}: %s\n", cluster1.NetConfig.ClusterID, cluster2.NetConfig.ClusterID, err)
-	}
-
-	if errorCluster2 != nil {
-		fmt.Printf("%s -> unable to remove TEP for cluster with id {%s}: %s\n", cluster2.NetConfig.ClusterID, cluster1.NetConfig.ClusterID, err)
-	}
-
-	if errorCluster1 != nil || errorCluster2 != nil {
-		return fmt.Errorf("unable to disconnect clusters")
-	}
+	cluster1.Printer.Spinner.Writer = os.Stdout
+	cluster2.Printer.Spinner.Writer = os.Stdout
 
 	return nil
 }

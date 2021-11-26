@@ -17,6 +17,8 @@ package connect
 import (
 	"context"
 	"fmt"
+
+	"github.com/alacuku/pterm"
 )
 
 // Args flags of the connect command.
@@ -27,13 +29,20 @@ type Args struct {
 	Cluster2Kubeconfig string
 }
 
+var (
+	Cluster1Name  = "cluster1"
+	Cluster1Color = pterm.FgLightBlue
+	Cluster2Name  = "cluster2"
+	Cluster2Color = pterm.FgLightMagenta
+)
+
 // Handler implements the logic of the connect command.
 func (a *Args) Handler(ctx context.Context) error {
 	// Check that the kubeconfigs are different.
 	if a.Cluster1Kubeconfig == a.Cluster2Kubeconfig {
 		return fmt.Errorf("kubeconfig1 and kubeconfig2 has to be different, current value: %s", a.Cluster2Kubeconfig)
 	}
-	cluster1, err := NewCluster(a.Cluster1Kubeconfig, a.Cluster1Namespace)
+	cluster1, err := NewCluster(a.Cluster1Kubeconfig, a.Cluster1Namespace, Cluster1Name, Cluster1Color)
 	if err != nil {
 		return err
 	}
@@ -42,7 +51,7 @@ func (a *Args) Handler(ctx context.Context) error {
 	}
 	defer cluster1.Stop()
 
-	cluster2, err := NewCluster(a.Cluster2Kubeconfig, a.Cluster2Namespace)
+	cluster2, err := NewCluster(a.Cluster2Kubeconfig, a.Cluster2Namespace, Cluster2Name, Cluster2Color)
 	if err != nil {
 		return err
 	}
@@ -128,11 +137,11 @@ func (a *Args) Handler(ctx context.Context) error {
 	if err := cluster2.getToken(ctx); err != nil {
 		return err
 	}
-	if err := cluster1.addCluster(ctx, cluster2.NetConfig.ClusterID, cluster2.NetConfig.ClusterID, cluster2.token, authURLCluster1, proxyURLCluster1); err != nil {
+	if err := cluster1.addCluster(ctx, cluster2.NetConfig.ClusterID, cluster2.NetConfig.ClusterID, cluster2.authToken, authURLCluster1, proxyURLCluster1); err != nil {
 		return err
 	}
 
-	if err := cluster2.addCluster(ctx, cluster1.NetConfig.ClusterID, cluster1.NetConfig.ClusterID, cluster1.token, authURLCluster2, proxyURLCluster2); err != nil {
+	if err := cluster2.addCluster(ctx, cluster1.NetConfig.ClusterID, cluster1.NetConfig.ClusterID, cluster1.authToken, authURLCluster2, proxyURLCluster2); err != nil {
 		return err
 	}
 	return nil
