@@ -57,6 +57,8 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 	rootCmd.AddCommand(newVersionCommand())
 	rootCmd.AddCommand(newStatusCommand(ctx))
 	rootCmd.AddCommand(newOffloadCommand(ctx))
+	rootCmd.AddCommand(newConnectCommand(ctx))
+	rootCmd.AddCommand(newDisconnectCommand(ctx))
 	rootCmd.AddCommand(newMoveCommand(ctx))
 	return rootCmd
 }

@@ -19,11 +19,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/vishvananda/netlink"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"inet.af/netaddr"
+	corev1 "k8s.io/api/core/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,6 +41,20 @@ var (
 	// ShutdownSignals signals used to terminate the programs.
 	ShutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGKILL}
 )
+
+type NetworkConfig struct {
+	PodCIDR         string
+	ExternalCIDR    string
+	ServiceCIDR     string
+	ReservedSubnets []string
+}
+
+type WireGuardConfig struct {
+	PubKey       string
+	EndpointIP   string
+	EndpointPort string
+	BackEndType  string
+}
 
 // MapIPToNetwork creates a new IP address obtained by means of the old IP address and the new network.
 func MapIPToNetwork(newNetwork, oldIP string) (newIP string, err error) {
@@ -339,4 +356,114 @@ func SplitNetwork(network string) []string {
 	halves[1] = Next(halves[0])
 
 	return halves
+}
+
+// GetNetworkConfiguration returns the podCIDR, serviceCIDR, reservedSubnets and the externalCIDR
+// as saved in the ipams.net.liqo.io custom resource instance.
+// todo: return more explicative errors
+func GetNetworkConfiguration(ipamS *netv1alpha1.IpamStorage) (*NetworkConfig, error) {
+	if ipamS.Spec.PodCIDR == "" {
+		return nil, fmt.Errorf("podCIDR is not set")
+	}
+
+	if ipamS.Spec.ServiceCIDR == "" {
+		return nil, fmt.Errorf("serviceCIDR is not set")
+	}
+
+	if ipamS.Spec.ExternalCIDR == "" {
+		return nil, fmt.Errorf("externalCIDR is not set")
+	}
+
+	return &NetworkConfig{
+		PodCIDR:         ipamS.Spec.PodCIDR,
+		ServiceCIDR:     ipamS.Spec.ServiceCIDR,
+		ExternalCIDR:    ipamS.Spec.ExternalCIDR,
+		ReservedSubnets: ipamS.Spec.ReservedSubnets,
+	}, nil
+}
+
+// RetrieveWGEPFromNodePort retrieves the WireGuard endpoint from a NodePort service.
+func RetrieveWGEPFromNodePort(service *corev1.Service, annotationKey, portName string) (endpointIP, endpointPort string, err error) {
+	// Check if the node's IP where the gatewayPod is running has been set
+	endpointIP, found := service.GetAnnotations()[annotationKey]
+	if !found {
+		err = fmt.Errorf("the node IP where the gateway pod is running has not yet been set as an annotation for service %q", klog.KObj(service))
+		return endpointIP, endpointPort, err
+	}
+
+	// Check if the nodePort for wireguard has been set
+	// TODO: move the code that extracts the port in a separate function.
+	for _, port := range service.Spec.Ports {
+		if port.Name == portName {
+			if port.NodePort == 0 {
+				err = fmt.Errorf("the NodePort for service %s has not yet been set", klog.KObj(service))
+				return endpointIP, endpointPort, err
+			}
+			endpointPort = strconv.FormatInt(int64(port.NodePort), 10)
+			return endpointIP, endpointPort, nil
+		}
+	}
+
+	err = fmt.Errorf("port %s not found in service %q", portName, klog.KObj(service))
+	return endpointIP, endpointPort, err
+}
+
+// RetrieveWGEPFromLoadBalancer retrieves the WireGuard endpoint from a LoadBalancer service.
+func RetrieveWGEPFromLoadBalancer(service *corev1.Service, portName string) (endpointIP, endpointPort string, err error) {
+	// Check if the ingress IP has been set.
+	if len(service.Status.LoadBalancer.Ingress) == 0 {
+		err = fmt.Errorf("the ingress IP has not been set for service %q of type %s", klog.KObj(service), service.Spec.Type)
+		return endpointIP, endpointPort, err
+	}
+
+	// Retrieve the endpoint address
+	if service.Status.LoadBalancer.Ingress[0].IP != "" {
+		endpointIP = service.Status.LoadBalancer.Ingress[0].IP
+	} else if service.Status.LoadBalancer.Ingress[0].Hostname != "" {
+		endpointIP = service.Status.LoadBalancer.Ingress[0].Hostname
+	}
+
+	// Retrieve the endpoint port
+	// TODO: move the code that extracts the port in a separate function.
+	for _, port := range service.Spec.Ports {
+		if port.Name == portName {
+			endpointPort = strconv.FormatInt(int64(port.Port), 10)
+			return endpointIP, endpointPort, nil
+		}
+	}
+
+	err = fmt.Errorf("port %s not found in service %q", portName, klog.KObj(service))
+	return endpointIP, endpointPort, err
+}
+
+func GetWireGuardEndpointFromService(service *corev1.Service, annotationKey, portName string) (endpointIP, endpointPort string, err error) {
+	switch service.Spec.Type {
+	case corev1.ServiceTypeNodePort:
+		return RetrieveWGEPFromNodePort(service, annotationKey, portName)
+
+	case corev1.ServiceTypeLoadBalancer:
+		return RetrieveWGEPFromLoadBalancer(service, portName)
+	default:
+		klog.Errorf("Service %q is of type %s, only types of %s and %s are accepted",
+			klog.KObj(service), service.Spec.Type, corev1.ServiceTypeLoadBalancer, corev1.ServiceTypeNodePort)
+		return "", "", fmt.Errorf("service %q is of type %s, only types of %s and %s are accepted",
+			klog.KObj(service), service.Spec.Type, corev1.ServiceTypeLoadBalancer, corev1.ServiceTypeNodePort)
+	}
+}
+
+// RetrieveWGPubKeyFromSecret retrieves the WireGuard public key from a given secret if present.
+func RetrieveWGPubKeyFromSecret(secret *corev1.Secret, keyName string) (pubKey wgtypes.Key, err error) {
+	// Extract the public key from the secret
+	pubKeyByte, found := secret.Data[keyName]
+	if !found {
+		err = fmt.Errorf("no data with key %s found in secret %q", keyName, klog.KObj(secret))
+		return pubKey, err
+	}
+	pubKey, err = wgtypes.ParseKey(string(pubKeyByte))
+	if err != nil {
+		err = fmt.Errorf("secret %q: invalid public key: %w", klog.KObj(secret), err)
+		return pubKey, err
+	}
+
+	return pubKey, nil
 }

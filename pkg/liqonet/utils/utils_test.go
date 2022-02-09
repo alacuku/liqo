@@ -15,7 +15,9 @@
 package utils_test
 
 import (
+	"fmt"
 	"net"
+	"strconv"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
@@ -24,6 +26,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	netv1alpha1 "github.com/liqotech/liqo/apis/net/v1alpha1"
+	liqoconst "github.com/liqotech/liqo/pkg/consts"
+	"github.com/liqotech/liqo/pkg/liqonet/tunnel/wireguard"
 	"github.com/liqotech/liqo/pkg/liqonet/utils"
 )
 
@@ -256,6 +261,227 @@ var _ = Describe("Liqonet", func() {
 			It("should return nil", func() {
 				err := utils.DeleteIFaceByName("not-existing")
 				Expect(err).Should(BeNil())
+			})
+		})
+	})
+
+	Describe("testing GetNetworkConfiguration function", func() {
+
+		var (
+			ipamStorage  netv1alpha1.IpamStorage
+			resNets      = []string{"10.1.0.0/16", "192.168.0.0/16"}
+			podCIDR      = "10.200.0.0/16"
+			serviceCIDR  = "10.150.2.0/24"
+			externalCIDR = "10.201.0.0/16"
+		)
+
+		BeforeEach(func() {
+			ipamStorage = netv1alpha1.IpamStorage{
+				Spec: netv1alpha1.IpamSpec{
+					ReservedSubnets: resNets,
+					ExternalCIDR:    externalCIDR,
+					PodCIDR:         podCIDR,
+					ServiceCIDR:     serviceCIDR,
+				},
+			}
+		})
+
+		Context("when podCIDR has not been set", func() {
+			It("should return error", func() {
+				ipamStorage.Spec.PodCIDR = ""
+				config, err := utils.GetNetworkConfiguration(&ipamStorage)
+				Expect(config).To(BeNil())
+				Expect(err).NotTo(Succeed())
+				Expect(err).To(MatchError(fmt.Errorf("podCIDR is not set")))
+			})
+		})
+
+		Context("when externalCIDR has not been set", func() {
+			It("should return error", func() {
+				ipamStorage.Spec.ExternalCIDR = ""
+				config, err := utils.GetNetworkConfiguration(&ipamStorage)
+				Expect(config).To(BeNil())
+				Expect(err).NotTo(Succeed())
+				Expect(err).To(MatchError(fmt.Errorf("externalCIDR is not set")))
+			})
+		})
+
+		Context("when serviceCIDR has not been set", func() {
+			It("should return error", func() {
+				ipamStorage.Spec.ServiceCIDR = ""
+				config, err := utils.GetNetworkConfiguration(&ipamStorage)
+				Expect(config).To(BeNil())
+				Expect(err).NotTo(Succeed())
+				Expect(err).To(MatchError(fmt.Errorf("serviceCIDR is not set")))
+			})
+		})
+
+		Context("when all fields has been set", func() {
+			It("should return configuration and nil", func() {
+				config, err := utils.GetNetworkConfiguration(&ipamStorage)
+				Expect(err).To(Succeed())
+				Expect(config).NotTo(BeNil())
+				Expect(config.ServiceCIDR).To(Equal(serviceCIDR))
+				Expect(config.ExternalCIDR).To(Equal(externalCIDR))
+				Expect(config.PodCIDR).To(Equal(podCIDR))
+				Expect(config.ReservedSubnets).To(Equal(resNets))
+			})
+		})
+	})
+
+	Describe("testing retrieval of WireGuard endpoint from service object", func() {
+
+		var (
+			service    *corev1.Service
+			nodeIPAddr = "192.168.0.162"
+			port       = corev1.ServicePort{
+				Name:     "wireguard",
+				Protocol: corev1.ProtocolUDP,
+				Port:     5871,
+				NodePort: 32444,
+			}
+			loadBalancerIP = "10.0.0.1"
+
+			loadBalancerHost = "testingWGEndpoint"
+		)
+
+		BeforeEach(func() {
+			service = &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						liqoconst.GatewayServiceLabelKey: liqoconst.GatewayServiceLabelValue,
+					},
+					Annotations: map[string]string{
+						liqoconst.GatewayServiceAnnotationKey: nodeIPAddr,
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{port},
+				},
+				Status: corev1.ServiceStatus{
+					LoadBalancer: corev1.LoadBalancerStatus{
+						Ingress: []corev1.LoadBalancerIngress{
+							{
+								IP:       loadBalancerIP,
+								Hostname: loadBalancerHost,
+							},
+						},
+					},
+				},
+			}
+		})
+
+		Context("when service is of type NodePort", func() {
+			Context("when ip of the node has not been added as annotation to the service", func() {
+				It("should return error", func() {
+					delete(service.Annotations, liqoconst.GatewayServiceAnnotationKey)
+					ip, port, err := utils.RetrieveWGEPFromNodePort(service, liqoconst.GatewayServiceAnnotationKey, wireguard.DriverName)
+					Expect(err).NotTo(Succeed())
+					Expect(ip).To(BeEmpty())
+					Expect(port).To(BeEmpty())
+				})
+			})
+
+			Context("when port with given name does not exist", func() {
+				It("should return error", func() {
+					service.Spec.Ports = nil
+					_, _, err := utils.RetrieveWGEPFromNodePort(service, liqoconst.GatewayServiceAnnotationKey, wireguard.DriverName)
+					Expect(err).NotTo(Succeed())
+				})
+			})
+
+			Context("when node port has no been set", func() {
+				It("should return error", func() {
+					service.Spec.Ports[0].NodePort = 0
+					_, _, err := utils.RetrieveWGEPFromNodePort(service, liqoconst.GatewayServiceAnnotationKey, wireguard.DriverName)
+					Expect(err).NotTo(Succeed())
+				})
+			})
+
+			Context("service is ready", func() {
+				It("should return nil", func() {
+					ip, epPort, err := utils.RetrieveWGEPFromNodePort(service, liqoconst.GatewayServiceAnnotationKey, wireguard.DriverName)
+					Expect(err).To(Succeed())
+					Expect(ip).To(Equal(nodeIPAddr))
+					Expect(epPort).To(Equal(strconv.FormatInt(int64(port.NodePort), 10)))
+				})
+			})
+		})
+
+		Context("when service is of type LoadBalancer", func() {
+			Context("when the LoadBalancer IP has not been set", func() {
+				It("should return error", func() {
+					service.Status.LoadBalancer.Ingress = nil
+					ip, port, err := utils.RetrieveWGEPFromLoadBalancer(service, wireguard.DriverName)
+					Expect(err).NotTo(Succeed())
+					Expect(ip).To(BeEmpty())
+					Expect(port).To(BeEmpty())
+				})
+			})
+
+			Context("when port with given name does not exist", func() {
+				It("should return err", func() {
+					service.Spec.Ports = nil
+					_, _, err := utils.RetrieveWGEPFromLoadBalancer(service, wireguard.DriverName)
+					Expect(err).NotTo(Succeed())
+				})
+			})
+
+			Context("when only the ip address has been set", func() {
+				It("should return nil", func() {
+					ip, epPort, err := utils.RetrieveWGEPFromLoadBalancer(service, wireguard.DriverName)
+					Expect(err).To(Succeed())
+					Expect(ip).To(Equal(loadBalancerIP))
+					Expect(epPort).To(Equal(strconv.FormatInt(int64(port.Port), 10)))
+				})
+			})
+
+			Context("when only the hostname has been set", func() {
+				It("should return nil", func() {
+					service.Status.LoadBalancer.Ingress[0].IP = ""
+					ip, epPort, err := utils.RetrieveWGEPFromLoadBalancer(service, wireguard.DriverName)
+					Expect(err).To(Succeed())
+					Expect(ip).To(Equal(loadBalancerHost))
+					Expect(epPort).To(Equal(strconv.FormatInt(int64(port.Port), 10)))
+				})
+			})
+		})
+	})
+
+	Describe("testing retrieval of WireGuard public Key from secret object", func() {
+		var (
+			secret     *corev1.Secret
+			correctKey = "cHVibGljLWtleS1vZi10aGUtY29ycmVjdC1sZW5ndGg="
+			wrongKey   = "incorrect key"
+		)
+
+		BeforeEach(func() {
+			secret = &corev1.Secret{
+				Data: map[string][]byte{wireguard.PublicKey: []byte(correctKey)},
+			}
+		})
+
+		Context("when key with given name does not exist", func() {
+			It("should return nil", func() {
+				delete(secret.Data, wireguard.PublicKey)
+				_, err := utils.RetrieveWGPubKeyFromSecret(secret, wireguard.PublicKey)
+				Expect(err).NotTo(Succeed())
+			})
+		})
+
+		Context("when key is wrong format", func() {
+			It("should return err", func() {
+				secret.Data[wireguard.PublicKey] = []byte(wrongKey)
+				_, err := utils.RetrieveWGPubKeyFromSecret(secret, wireguard.PublicKey)
+				Expect(err).NotTo(Succeed())
+			})
+		})
+
+		Context("when key exists", func() {
+			It("should return nil", func() {
+				key, err := utils.RetrieveWGPubKeyFromSecret(secret, wireguard.PublicKey)
+				Expect(err).To(Succeed())
+				Expect(key.String()).To(Equal(correctKey))
 			})
 		})
 	})

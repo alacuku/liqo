@@ -260,6 +260,10 @@ func (tec *TunnelEndpointCreator) enforceRemoteNetConfigMeta(ctx context.Context
 			klog.Errorf("Failed to retrieve ForeignCluster associated with NetworkConfig %q: %v", klog.KObj(netcfg), err)
 			return err
 		}
+		if err != nil {
+			klog.Warning("Failed to retrieve ForeignCluster associated with NetworkConfig %q: %v", klog.KObj(netcfg), err)
+			return nil
+		}
 
 		// It could happen that the networkconfig is created before the foreigncluster.
 		if err != nil {

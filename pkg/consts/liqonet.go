@@ -101,4 +101,20 @@ const (
 	DefaultMTU = 1440
 	// GatewayListeningPort port used by the vpn tunnel.
 	GatewayListeningPort = 5871
+
+	// **** Liqo Gateway Service ****.
+
+	// GatewayServiceAnnotationKey used to annotate the Gateway service with the IP of the node where the
+	// active gateway is running.
+	GatewayServiceAnnotationKey = "net.liqo.io/gatewayNodeIP"
+	// These labels are the ones set during the deployment of liqo using the helm chart.
+	// Any change to those labels on the helm chart has also to be reflected here.
+	// ServiceLabelKey key of the label added to the Gateway service. Used to get the
+	// service by label.
+	// GatewayServiceLabelKey key of the label used to get the service.
+	GatewayServiceLabelKey = "net.liqo.io/gateway"
+	// GatewayServiceLabelValue value of the label used to get the service.
+	GatewayServiceLabelValue = "true"
+	// NetworkConfigNamePrefix prefix used to generate the names of the networkconfigs.
+	NetworkConfigNamePrefix = "net-config-"
 )
